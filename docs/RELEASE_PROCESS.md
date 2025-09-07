@@ -1,158 +1,168 @@
 # Release Process Documentation
 
 ## Overview
-The gh-manager-cli project uses a single, optimized GitHub Actions workflow for automated releases. This document explains how the release process works and how to contribute.
+The gh-manager-cli project uses a **single optimized workflow** for all releases to minimize complexity and avoid skipped workflow runs.
 
 ## Architecture: Single Workflow Approach
 
-We use a **single workflow** (`release.yml`) that handles all release scenarios:
-- Pull Request merges to main
-- Direct commits to main
-- Manual workflow triggers
-
-### Why Single Workflow?
-- **Simplicity**: One place to manage all release logic
-- **No race conditions**: Sequential processing of commits
-- **Zero skipped runs**: Uses job-level conditions instead of workflow-level
-- **Easier debugging**: All logs in one workflow run
-
-## Release Workflow
-
 ```
-┌─────────────────────┐
-│  Push to main       │
-│  (PR or direct)     │
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│  Check Release Job  │
-│  - Skip if release  │
-│    commit           │
-│  - Check semantic   │
-│    commits          │
-└──────────┬──────────┘
-           │
-           ▼
-      Should Release?
-           │
-    ┌──────┴──────┐
-    │ No          │ Yes
-    ▼             ▼
-[End]      ┌─────────────────────┐
-           │  Build Job          │
-           │  - Linux binary     │
-           │  - macOS binary     │
-           │  - Windows binary   │
-           └──────────┬──────────┘
-                      │
-                      ▼
-           ┌─────────────────────┐
-           │  Release Job        │
-           │  - semantic-release │
-           │  - NPM publish      │
-           │  - GitHub release   │
-           │  - GitHub Packages  │
-           │  - Homebrew update  │
-           └─────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                         Main Branch                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                               │
+│  [Direct Commit] ──┐                                         │
+│                    ├──► [release.yml workflow]               │
+│  [PR Merge] ───────┘         │                               │
+│                              ▼                               │
+│                    ┌──────────────────┐                      │
+│                    │ Check Release    │                      │
+│                    │ (Job-level       │                      │
+│                    │  conditions)     │                      │
+│                    └────────┬─────────┘                      │
+│                             │                                │
+│                    ┌────────▼─────────┐                      │
+│                    │ Should Release?  │                      │
+│                    └──┬──────────┬────┘                      │
+│                       │          │                           │
+│                    NO │          │ YES                       │
+│                       │          │                           │
+│                 ┌─────▼──┐  ┌───▼──────────┐                │
+│                 │ Exit   │  │ Build & Test │                │
+│                 │ (0     │  └───┬──────────┘                │
+│                 │ skips) │      │                            │
+│                 └────────┘  ┌───▼──────────────┐            │
+│                             │ Semantic Release │             │
+│                             │ - Analyze commits│             │
+│                             │ - Bump version   │             │
+│                             │ - Create tag     │             │
+│                             │ - GitHub Release │             │
+│                             │ - NPM Publish    │             │
+│                             └───┬──────────────┘            │
+│                                 │                            │
+│                             ┌───▼──────────────┐            │
+│                             │ Update Homebrew  │             │
+│                             │ Formula          │             │
+│                             └──────────────────┘            │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Semantic Commits
+## Why Single Workflow?
 
-The workflow triggers releases based on semantic commit messages:
+### Benefits
+1. **Zero Skipped Runs**: Uses job-level conditions instead of workflow-level
+2. **Cleaner History**: No confusing "skipped" statuses in GitHub Actions
+3. **Single Source of Truth**: One workflow to maintain
+4. **Handles All Cases**: Works for both PR merges and direct commits
 
-### Release Triggers
-- `feat:` - New features (minor version bump)
-- `fix:` - Bug fixes (patch version bump)
-- `perf:` - Performance improvements (patch version bump)
-- `refactor:` - Code refactoring that affects external API (patch version bump)
-- `revert:` - Reverting previous commits (patch version bump)
-- `BREAKING CHANGE:` - Breaking changes (major version bump)
-- `feat!:` or `fix!:` - Breaking changes (major version bump)
+### How It Avoids Infinite Loops
+- The workflow checks if a commit message starts with `chore(release):`
+- If it does, the workflow exits early (but shows as successful, not skipped)
+- This prevents the semantic-release commit from triggering another release
 
-### Non-Release Commits
+## Release Triggers
+
+The workflow runs on every push to main and determines if a release is needed based on:
+
+### Semantic Commit Format
+```
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+```
+
+### Release-Triggering Commit Types
+- `feat:` - New feature (minor version bump)
+- `fix:` - Bug fix (patch version bump)
+- `perf:` - Performance improvement (patch version bump)
+- `BREAKING CHANGE:` - Breaking change (major version bump)
+
+### Non-Release Commit Types
 - `chore:` - Maintenance tasks
 - `docs:` - Documentation only
 - `style:` - Code style changes
-- `test:` - Test additions or fixes
+- `refactor:` - Code refactoring
+- `test:` - Test changes
 - `ci:` - CI/CD changes
-- `build:` - Build system changes
 
-## Release Steps
+## Release Flow
 
-### 1. Check Release Job
-- Analyzes commits since last tag
-- Skips if current commit is a release commit (`chore(release):`)
-- Determines if semantic commits warrant a release
+1. **Developer Action**: Push to main (direct or via PR)
+2. **Workflow Triggers**: `release.yml` starts
+3. **Check Release Job**: Analyzes commit message
+   - If `chore(release):*` → Exit (no release)
+   - Otherwise → Continue
+4. **Build Job**: Runs tests and builds
+5. **Release Job**: 
+   - Analyzes all commits since last release
+   - Determines version bump (major/minor/patch)
+   - Updates package.json
+   - Creates git tag
+   - Publishes to NPM
+   - Creates GitHub Release
+   - Updates Homebrew formula
 
-### 2. Build Job (if release needed)
-- Builds binaries for multiple platforms:
-  - Linux (x64)
-  - macOS (x64)
-  - Windows (x64)
-- Uploads artifacts for release job
+## Version Numbering
 
-### 3. Release Job
-- Runs semantic-release to:
-  - Determine version bump
-  - Update package.json
-  - Generate changelog
-  - Create git tag
-  - Create GitHub release
-- Publishes to NPM registry
-- Publishes to GitHub Packages
-- Updates Homebrew tap formula
+Uses [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`
 
-## Manual Release
-
-To trigger a release manually:
-1. Go to Actions tab in GitHub
-2. Select "Release Pipeline" workflow
-3. Click "Run workflow"
-4. Select branch (usually main)
+- **MAJOR**: Breaking changes
+- **MINOR**: New features (backward compatible)
+- **PATCH**: Bug fixes
 
 ## Configuration Files
 
-### `.releaserc`
-Configures semantic-release plugins and behavior.
+### `.releaserc.json`
+```json
+{
+  "branches": ["main"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    "@semantic-release/changelog",
+    "@semantic-release/npm",
+    "@semantic-release/github",
+    "@semantic-release/git"
+  ]
+}
+```
 
-### `package.json`
-Contains current version and publishing configuration.
+### Workflow: `.github/workflows/release.yml`
+- Single workflow handling all release logic
+- Uses job-level conditions to avoid skipped runs
+- Outputs clear success/failure status
 
-### `.github/workflows/release.yml`
-The single workflow file that handles all release scenarios.
+## Manual Release
 
-## Secrets Required
+If needed, you can trigger a release manually:
+```bash
+npm run release
+```
 
-The workflow requires these secrets:
-- `GITHUB_TOKEN` or `GH_TOKEN` - For GitHub API access
-- `NPM_TOKEN` - For NPM publishing (optional)
+This runs semantic-release locally (requires proper tokens).
 
 ## Troubleshooting
 
 ### Release Not Triggering
-- Check commit messages follow semantic format
-- Verify commits since last tag include release triggers
-- Check workflow logs for "should_release" output
+- Check commit message format
+- Ensure commits follow semantic conventions
+- Verify no `chore(release):` prefix
 
-### Build Failures
-- Check Node.js version compatibility
-- Verify dependencies are installed correctly
-- Review platform-specific build logs
+### Version Not Bumping Correctly
+- Review commit types since last release
+- Check for `BREAKING CHANGE:` in commit body
+- Verify `.releaserc.json` configuration
 
-### Publishing Failures
-- Verify NPM_TOKEN is valid
-- Check package name availability
-- Review GitHub Packages permissions
+## Deleted Workflows
+
+The following redundant workflows were removed:
+1. `automated-release.yml` - Replaced by single workflow
+2. `release-on-version-change.yml` - Never performed useful work
 
 ## Best Practices
 
-1. **Use semantic commits**: Follow conventional commits format
-2. **Test locally**: Run `pnpm build` before pushing
-3. **Review changelogs**: Ensure generated changelog is accurate
-4. **Monitor releases**: Check GitHub releases page after workflow completes
-
-## Version History
-
-- **v2.0.0** - Single optimized workflow (current)
-- **v1.0.0** - Multiple workflows (deprecated)
+1. **Use Semantic Commits**: Always follow the commit format
+2. **PR Titles Matter**: When squash-merging, PR title becomes commit message
+3. **Breaking Changes**: Document in commit body with `BREAKING CHANGE:`
+4. **Direct Commits**: Okay for quick fixes, workflow handles both cases

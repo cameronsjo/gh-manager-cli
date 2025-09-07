@@ -1,15 +1,64 @@
-name: Automated Release Workflow
+name: Release Pipeline
 
 on:
   push:
     branches: [main]
-  workflow_dispatch:
+  workflow_dispatch: # Manual trigger if needed
 
 jobs:
-  # Job: Build binaries for multiple platforms
+  # Check if we should create a release
+  check-release:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.analyze.outputs.should_release }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Analyze commits
+        id: analyze
+        run: |
+          # Skip if this is already a release commit
+          if [[ "${{ github.event.head_commit.message }}" == "chore(release):"* ]]; then
+            echo "::notice::Skipping - this is a release commit"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Skip if this is a merge commit from a release
+          if [[ "${{ github.event.head_commit.message }}" == *"chore(release):"* ]]; then
+            echo "::notice::Skipping - contains release commit"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Check if we have semantic commits that warrant a release
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $LATEST_TAG"
+          
+          # Get commits since last tag
+          COMMITS=$(git log ${LATEST_TAG}..HEAD --pretty=format:"%s" 2>/dev/null || echo "")
+          echo "Commits since last tag:"
+          echo "$COMMITS"
+          
+          # Check for semantic commits
+          if echo "$COMMITS" | grep -qE "^(feat|fix|perf|refactor|revert)(\(.+\))?!?:"; then
+            echo "::notice::Found semantic commits - will create release"
+            echo "should_release=true" >> $GITHUB_OUTPUT
+          elif echo "$COMMITS" | grep -qE "^BREAKING CHANGE:"; then
+            echo "::notice::Found breaking change - will create release"
+            echo "should_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "::notice::No semantic commits found - skipping release"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Build binaries for multiple platforms
   build:
-    # Skip if commit message starts with 'chore(release):'
-    if: ${{ (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    needs: check-release
+    if: needs.check-release.outputs.should_release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -30,8 +79,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -66,7 +113,10 @@ jobs:
         run: npm install -g pkg
 
       - name: Create binary
-        run: pkg dist/index.js --targets node18-${{ matrix.platform }}-${{ matrix.arch }} --output gh-manager-cli-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}
+        run: |
+          pkg dist/index.js \
+            --targets node18-${{ matrix.platform }}-${{ matrix.arch }} \
+            --output gh-manager-cli-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -75,11 +125,10 @@ jobs:
           path: gh-manager-cli-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}
           retention-days: 90
 
-  # Job: Create automated release using semantic-release
-  create-release:
-    needs: build
-    # Skip if commit message starts with 'chore(release):'
-    if: ${{ (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && !startsWith(github.event.head_commit.message, 'chore(release):') }}
+  # Create release using semantic-release
+  release:
+    needs: [check-release, build]
+    if: needs.check-release.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -98,6 +147,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v3
@@ -130,6 +180,7 @@ jobs:
 
       - name: Display downloaded artifacts
         run: |
+          echo "Downloaded artifacts:"
           ls -la ./binaries/
           find ./binaries -type f -exec ls -la {} \;
 
@@ -154,10 +205,10 @@ jobs:
           # Check if version changed
           if [ "$VERSION_BEFORE" != "$VERSION_AFTER" ]; then
             echo "NEW_VERSION_CREATED=true" >> $GITHUB_ENV
-            echo "Version bumped from ${VERSION_BEFORE} to ${VERSION_AFTER}"
+            echo "::notice::Version bumped from ${VERSION_BEFORE} to ${VERSION_AFTER}"
           else
             echo "NEW_VERSION_CREATED=false" >> $GITHUB_ENV
-            echo "No version bump occurred (still at ${VERSION_BEFORE})"
+            echo "::notice::No version bump occurred (still at ${VERSION_BEFORE})"
           fi
 
       - name: Publish to GitHub Packages
@@ -173,7 +224,7 @@ jobs:
           
           # Check if this version already exists in GitHub Packages
           if npm view @wiiiimm/gh-manager-cli@${{ env.VERSION_AFTER }} --registry=https://npm.pkg.github.com 2>/dev/null; then
-            echo "Version ${{ env.VERSION_AFTER }} already exists in GitHub Packages, skipping publish"
+            echo "::notice::Version ${{ env.VERSION_AFTER }} already exists in GitHub Packages, skipping publish"
             exit 0
           fi
           
@@ -184,7 +235,7 @@ jobs:
           jq '.name = "@wiiiimm/gh-manager-cli" | .publishConfig = {"registry": "https://npm.pkg.github.com"}' package-original.json > package.json
           
           # Publish to GitHub Packages
-          npm publish --registry=https://npm.pkg.github.com
+          npm publish --registry=https://npm.pkg.github.com || echo "::warning::Failed to publish to GitHub Packages"
           
           # Restore original package.json
           mv package-original.json package.json
@@ -196,9 +247,7 @@ jobs:
         run: |
           # Check if GH_TOKEN is available
           if [ -z "$GITHUB_TOKEN" ]; then
-            echo "⚠️ Homebrew tap update skipped: GH_TOKEN secret not configured"
-            echo "To enable automatic Homebrew tap updates, add a GH_TOKEN secret with repo write permissions"
-            echo "The GH_TOKEN needs 'contents: write' permission for wiiiimm/homebrew-tap"
+            echo "::warning::Homebrew tap update skipped: GH_TOKEN secret not configured"
             exit 0
           fi
           
@@ -230,5 +279,5 @@ jobs:
           # Commit and push
           cd tap-repo
           git add Formula/gh-manager-cli.rb
-          git commit -m "Update gh-manager-cli to ${{ env.VERSION_AFTER }}"
-          git push origin main
+          git commit -m "Update gh-manager-cli to ${{ env.VERSION_AFTER }}" || echo "::notice::No changes to commit"
+          git push origin main || echo "::warning::Failed to push Homebrew formula update"

@@ -12,7 +12,7 @@
 
 Interactive terminal app to browse and manage your personal GitHub repositories. Built with Ink (React for CLIs) and the GitHub GraphQL API.
 
-🌐 **Visit our website:** [gh-manager-cli.dev](https://gh-manager-cli.dev) | [Source](https://github.com/wiiiimm/gh-manager-cli-site) | Hosted on [Vercel](https://vercel.com)
+🌐 **Visit our website:** [gh-manager-cli.dev](https://gh-manager-cli.dev) | [Source](https://github.com/wiiiimm/gh-manager-cli-site)
 
 ## 🧹 Clean Up Your GitHub Account in Minutes
 

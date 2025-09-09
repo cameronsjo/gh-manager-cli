@@ -1,3 +1,10 @@
+# [1.37.0](https://github.com/wiiiimm/gh-manager-cli/compare/v1.36.0...v1.37.0) (2025-09-09)
+
+
+### Features
+
+* add comprehensive environment variable documentation ([0493cf7](https://github.com/wiiiimm/gh-manager-cli/commit/0493cf7e1520609d4afffc4441021bc5b01194e3))
+
 # [1.36.0](https://github.com/wiiiimm/gh-manager-cli/compare/v1.35.1...v1.36.0) (2025-09-09)
 
 

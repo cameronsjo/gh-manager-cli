@@ -1,3 +1,10 @@
+## [1.35.1](https://github.com/wiiiimm/gh-manager-cli/compare/v1.35.0...v1.35.1) (2025-09-09)
+
+
+### Bug Fixes
+
+* restructure workflow to build after version commit ([0fcba46](https://github.com/wiiiimm/gh-manager-cli/commit/0fcba46039982209e78bab285e205adc96e27c9e))
+
 # [1.35.0](https://github.com/wiiiimm/gh-manager-cli/compare/v1.34.0...v1.35.0) (2025-09-09)
 
 

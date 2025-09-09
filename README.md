@@ -7,6 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/node/v/gh-manager-cli.svg)](https://nodejs.org)
 [![GitHub Stars](https://img.shields.io/github/stars/wiiiimm/gh-manager-cli.svg)](https://github.com/wiiiimm/gh-manager-cli/stargazers)
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink)](https://github.com/sponsors/wiiiimm)
 [![Context Engineered with Claude Opus 4.1](https://img.shields.io/badge/Context%20Engineered%20with-Claude%20Opus%204.1-blue)](https://www.anthropic.com)
 [![Context Engineered with Codex GPT-5](https://img.shields.io/badge/Context%20Engineered%20with-Codex%20GPT--5-green)](https://openai.com)
 
@@ -529,7 +530,8 @@ Highlights on deck:
 
 If you find gh-manager-cli useful, consider supporting its development:
 
-☕ **[Buy Me a Coffee](https://buymeacoffee.com/wiiiimm)** - Support with coffee donations
+💖 **[GitHub Sponsors](https://github.com/sponsors/wiiiimm)** - Support directly through GitHub
+☕ **[Buy Me a Coffee](https://buymeacoffee.com/wiiiimm)** - One-time coffee donations
 
 Your support helps maintain and improve this project. Thank you! 🙏
 

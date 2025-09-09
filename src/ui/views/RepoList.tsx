@@ -1889,7 +1889,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
             <Box flexDirection="column" alignItems="center">
               <Text color="yellow">💚 Thanks for using gh-manager-cli!</Text>
               <Text color="gray">Your support helps craft more open-source tools</Text>
-              <Text color="cyan">☕ buymeacoffee.com/wiiiimm</Text>
+              <Text color="cyan">💖 github.com/sponsors/wiiiimm</Text>
             </Box>
           </Box>
         </Box>
@@ -2498,7 +2498,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
         {/* Line 5: Sponsorship */}
         <Box width={terminalWidth} justifyContent="center" marginTop={1}>
           <Text color="yellow" dimColor={modalOpen ? true : undefined}>
-            💚 Support the project: buymeacoffee.com/wiiiimm
+            💖 Sponsor on GitHub: github.com/sponsors/wiiiimm
           </Text>
         </Box>
       </Box>

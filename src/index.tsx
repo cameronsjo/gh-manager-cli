@@ -88,10 +88,10 @@ const showSponsorshipMessage = () => {
   console.log('\n💚 Thank you for using gh-manager-cli!\n');
   console.log('If this app saved you time, please consider supporting');
   console.log('the development of more open-source projects like this:\n');
-  console.log('  ☕ Buy Me a Coffee: https://buymeacoffee.com/wiiiimm');
+  console.log('  💖 Sponsor on GitHub: https://github.com/sponsors/wiiiimm');
   console.log('  🚀 Visit my site: https://wiiiimm.codes');
   console.log('  💬 Leave feedback: https://github.com/wiiiimm/gh-manager-cli');
-  console.log('\nYour support and contributions make a difference! 🙏\n');
+  console.log('\nYour support keeps this project alive! 🙏\n');
   console.log('─'.repeat(60) + '\n');
 };
 

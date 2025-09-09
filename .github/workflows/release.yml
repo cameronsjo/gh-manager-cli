@@ -6,14 +6,19 @@ on:
   workflow_dispatch: # Manual trigger if needed
 
 jobs:
-  # Check if semantic-release will create a new version
-  check-release:
+  # Run semantic-release to create version, changelog, and tag
+  semantic-release:
     # Skip if commit message starts with 'chore(release):'
     if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
     outputs:
       new_release_published: ${{ steps.semantic.outputs.new_release_published }}
       new_release_version: ${{ steps.semantic.outputs.new_release_version }}
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -35,45 +40,42 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Run semantic-release in dry-run mode
+      - name: Build application
+        run: pnpm run build
+
+      - name: Run semantic-release
         id: semantic
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          # Create a minimal config for dry-run check (no npm plugin to avoid token issues)
-          cat > .releaserc.tmp.json << 'EOF'
-          {
-            "branches": ["main"],
-            "plugins": [
-              "@semantic-release/commit-analyzer",
-              "@semantic-release/release-notes-generator"
-            ]
-          }
-          EOF
+          # Run semantic-release to handle versioning and changelog
+          npx semantic-release
           
-          # Run semantic-release with the temp config to check if a release is needed
-          # Using --config to completely override the default config
-          npx semantic-release --dry-run --no-ci --config ./.releaserc.tmp.json 2>&1 | tee semantic-output.txt || true
-          
-          # Clean up temp config
-          rm -f .releaserc.tmp.json
-          
-          # Check if a new release would be published
-          if grep -q "The next release version is" semantic-output.txt; then
+          # Check if a new version was created
+          if [ -f ".semantic-release-version" ]; then
+            VERSION=$(cat .semantic-release-version)
             echo "new_release_published=true" >> $GITHUB_OUTPUT
-            VERSION=$(grep -oE 'The next release version is [0-9]+\.[0-9]+\.[0-9]+' semantic-output.txt | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
             echo "new_release_version=${VERSION}" >> $GITHUB_OUTPUT
-            echo "::notice::Semantic-release will publish version ${VERSION}"
+            echo "::notice::Published version ${VERSION}"
           else
-            echo "new_release_published=false" >> $GITHUB_OUTPUT
-            echo "::notice::No new release will be published"
+            # Check package.json for version changes as fallback
+            VERSION=$(node -p "require('./package.json').version")
+            if git diff HEAD~1 package.json | grep -q '"version"'; then
+              echo "new_release_published=true" >> $GITHUB_OUTPUT
+              echo "new_release_version=${VERSION}" >> $GITHUB_OUTPUT
+              echo "::notice::Published version ${VERSION}"
+            else
+              echo "new_release_published=false" >> $GITHUB_OUTPUT
+              echo "::notice::No new release published"
+            fi
           fi
 
   # Build binaries for multiple platforms
   build:
-    needs: check-release
-    if: needs.check-release.outputs.new_release_published == 'true'
+    needs: semantic-release
+    if: needs.semantic-release.outputs.new_release_published == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -94,6 +96,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Pull latest changes
+        run: git pull origin main
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -137,53 +145,18 @@ jobs:
           path: gh-manager-cli-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}
           retention-days: 90
 
-  # Create release using semantic-release
-  release:
-    needs: [check-release, build]
-    if: needs.check-release.outputs.new_release_published == 'true'
+  # Upload binaries to the GitHub release
+  upload-binaries:
+    needs: [semantic-release, build]
+    if: needs.semantic-release.outputs.new_release_published == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
-      issues: write
-      packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          token: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           ref: main
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 8
-
-      - name: Get pnpm store directory
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v3
-        with:
-          path: ${{ env.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-
-      - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Build application
-        run: pnpm run build
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
@@ -196,47 +169,60 @@ jobs:
           ls -la ./binaries/
           find ./binaries -type f -exec ls -la {} \;
 
-      - name: Run semantic-release
-        id: semantic
+      - name: Upload binaries to release
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ needs.semantic-release.outputs.new_release_version }}
         run: |
-          # Capture the version before semantic-release
-          VERSION_BEFORE=$(node -p "require('./package.json').version")
-          echo "VERSION_BEFORE=${VERSION_BEFORE}" >> $GITHUB_ENV
+          # Get the release ID for the version tag
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/v${VERSION} --jq '.id' || echo "")
           
-          # Run semantic-release
-          npx semantic-release
-          
-          # Capture the version after semantic-release
-          VERSION_AFTER=$(node -p "require('./package.json').version")
-          echo "VERSION_AFTER=${VERSION_AFTER}" >> $GITHUB_ENV
-          
-          # Check if version changed
-          if [ "$VERSION_BEFORE" != "$VERSION_AFTER" ]; then
-            echo "NEW_VERSION_CREATED=true" >> $GITHUB_ENV
-            echo "::notice::Version bumped from ${VERSION_BEFORE} to ${VERSION_AFTER}"
-          else
-            echo "NEW_VERSION_CREATED=false" >> $GITHUB_ENV
-            echo "::notice::No version bump occurred (still at ${VERSION_BEFORE})"
+          if [ -z "$RELEASE_ID" ]; then
+            echo "::error::Could not find release for tag v${VERSION}"
+            exit 1
           fi
+          
+          echo "Uploading binaries to release ID: $RELEASE_ID"
+          
+          # Upload each binary
+          for file in binaries/*/*; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              echo "Uploading $filename..."
+              gh release upload v${VERSION} "$file" --clobber || echo "::warning::Failed to upload $filename"
+            fi
+          done
+
+  # Publish to other registries and update Homebrew
+  publish-extras:
+    needs: semantic-release
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Publish to GitHub Packages
-        if: env.NEW_VERSION_CREATED == 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.semantic-release.outputs.new_release_version }}
         run: |
-          echo "Publishing version ${{ env.VERSION_AFTER }} to GitHub Packages..."
+          echo "Publishing version ${VERSION} to GitHub Packages..."
           
           # Create .npmrc for GitHub Packages
           echo "@wiiiimm:registry=https://npm.pkg.github.com" >> .npmrc
           echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" >> .npmrc
           
           # Check if this version already exists in GitHub Packages
-          if npm view @wiiiimm/gh-manager-cli@${{ env.VERSION_AFTER }} --registry=https://npm.pkg.github.com 2>/dev/null; then
-            echo "::notice::Version ${{ env.VERSION_AFTER }} already exists in GitHub Packages, skipping publish"
+          if npm view @wiiiimm/gh-manager-cli@${VERSION} --registry=https://npm.pkg.github.com 2>/dev/null; then
+            echo "::notice::Version ${VERSION} already exists in GitHub Packages, skipping publish"
             exit 0
           fi
           
@@ -253,9 +239,9 @@ jobs:
           mv package-original.json package.json
 
       - name: Update Homebrew Tap
-        if: env.NEW_VERSION_CREATED == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          VERSION: ${{ needs.semantic-release.outputs.new_release_version }}
         run: |
           # Check if GH_TOKEN is available
           if [ -z "$GITHUB_TOKEN" ]; then
@@ -263,11 +249,11 @@ jobs:
             exit 0
           fi
           
-          echo "Updating Homebrew tap for version ${{ env.VERSION_AFTER }}..."
+          echo "Updating Homebrew tap for version ${VERSION}..."
           
           # Create npm tarball locally
           npm pack
-          TARBALL="gh-manager-cli-${{ env.VERSION_AFTER }}.tgz"
+          TARBALL="gh-manager-cli-${VERSION}.tgz"
           
           # Calculate SHA256 of the tarball
           if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -284,12 +270,12 @@ jobs:
           
           # Update the formula
           FORMULA="tap-repo/Formula/gh-manager-cli.rb"
-          sed -i.bak -E "s|url \"https://registry.npmjs.org/gh-manager-cli/-/gh-manager-cli-[0-9.]+\.tgz\"|url \"https://registry.npmjs.org/gh-manager-cli/-/gh-manager-cli-${{ env.VERSION_AFTER }}.tgz\"|" "$FORMULA"
+          sed -i.bak -E "s|url \"https://registry.npmjs.org/gh-manager-cli/-/gh-manager-cli-[0-9.]+\.tgz\"|url \"https://registry.npmjs.org/gh-manager-cli/-/gh-manager-cli-${VERSION}.tgz\"|" "$FORMULA"
           sed -i.bak -E "s|sha256 \"[a-f0-9]{64}\"|sha256 \"${SHA256}\"|" "$FORMULA"
           rm -f "$FORMULA.bak"
           
           # Commit and push
           cd tap-repo
           git add Formula/gh-manager-cli.rb
-          git commit -m "Update gh-manager-cli to ${{ env.VERSION_AFTER }}" || echo "::notice::No changes to commit"
+          git commit -m "Update gh-manager-cli to ${VERSION}" || echo "::notice::No changes to commit"
           git push origin main || echo "::warning::Failed to push Homebrew formula update"

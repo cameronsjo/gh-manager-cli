@@ -8,7 +8,7 @@ on:
 jobs:
   # Run semantic-release to create version, changelog, and tag
   semantic-release:
-    # Skip if commit message starts with 'chore(release):'
+    # Only run if NOT a release commit
     if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
     outputs:
@@ -81,8 +81,8 @@ jobs:
 
   # Build binaries for multiple platforms
   build:
-    needs: semantic-release
-    if: needs.semantic-release.outputs.new_release_published == 'true'
+    # Run only for release commits (when we have the new version)
+    if: ${{ startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -103,12 +103,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Pull latest changes
-        run: git pull origin main
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -154,8 +148,8 @@ jobs:
 
   # Upload binaries to the GitHub release
   upload-binaries:
-    needs: [semantic-release, build]
-    if: needs.semantic-release.outputs.new_release_published == 'true'
+    needs: build
+    if: ${{ startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -176,10 +170,17 @@ jobs:
           ls -la ./binaries/
           find ./binaries -type f -exec ls -la {} \;
 
+      - name: Get version from package.json
+        id: get_version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION}"
+
       - name: Upload binaries to release
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.semantic-release.outputs.new_release_version }}
+          VERSION: ${{ steps.get_version.outputs.version }}
         run: |
           # Get the release ID for the version tag
           RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/v${VERSION} --jq '.id' || echo "")
@@ -202,8 +203,8 @@ jobs:
 
   # Publish to other registries and update Homebrew
   publish-extras:
-    needs: semantic-release
-    if: needs.semantic-release.outputs.new_release_published == 'true'
+    needs: upload-binaries
+    if: ${{ startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -216,10 +217,17 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Get version from package.json
+        id: get_version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION}"
+
       - name: Publish to GitHub Packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.semantic-release.outputs.new_release_version }}
+          VERSION: ${{ steps.get_version.outputs.version }}
         run: |
           echo "Publishing version ${VERSION} to GitHub Packages..."
           
@@ -248,7 +256,7 @@ jobs:
       - name: Update Homebrew Tap
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-          VERSION: ${{ needs.semantic-release.outputs.new_release_version }}
+          VERSION: ${{ steps.get_version.outputs.version }}
         run: |
           # Check if GH_TOKEN is available
           if [ -z "$GITHUB_TOKEN" ]; then

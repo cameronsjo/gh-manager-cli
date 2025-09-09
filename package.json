@@ -109,28 +109,6 @@
           ],
           "message": "chore(release): ${nextRelease.version}\n\n${nextRelease.notes}"
         }
-      ],
-      [
-        "@semantic-release/github",
-        {
-          "assets": [
-            {
-              "path": "binaries/gh-manager-cli-linux-x64/gh-manager-cli-linux-x64",
-              "name": "gh-manager-cli-linux-x64",
-              "label": "Linux x64 Binary"
-            },
-            {
-              "path": "binaries/gh-manager-cli-macos-x64/gh-manager-cli-macos-x64",
-              "name": "gh-manager-cli-macos-x64",
-              "label": "macOS x64 Binary"
-            },
-            {
-              "path": "binaries/gh-manager-cli-windows-x64/gh-manager-cli-windows-x64.exe",
-              "name": "gh-manager-cli-windows-x64.exe",
-              "label": "Windows x64 Binary"
-            }
-          ]
-        }
       ]
     ]
   }

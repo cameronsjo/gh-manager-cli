@@ -12,6 +12,7 @@ interface RepoRowProps {
   spacingLines: number;
   dim?: boolean;
   forkTracking: boolean;
+  starsMode?: boolean;
 }
 
 export default function RepoRow({ 
@@ -21,7 +22,8 @@ export default function RepoRow({
   maxWidth, 
   spacingLines, 
   dim, 
-  forkTracking 
+  forkTracking,
+  starsMode = false
 }: RepoRowProps) {
   const langName = repo.primaryLanguage?.name || '';
   const langColor = repo.primaryLanguage?.color || '#666666';
@@ -41,12 +43,21 @@ export default function RepoRow({
   const numColor = selected ? chalk.cyan : chalk.gray;
   const nameColor = selected ? chalk.cyan.bold : chalk.white;
   line1 += numColor(`${String(index).padStart(3, ' ')}.`);
+  // Show star icon if the repo is starred
+  if (repo.viewerHasStarred) {
+    line1 += chalk.yellow(' ⭐');
+  }
   line1 += nameColor(` ${repo.nameWithOwner}`);
   // Use visibility field to properly distinguish between PRIVATE and INTERNAL
   if (repo.visibility === 'INTERNAL') {
     line1 += chalk.magenta(' Internal');
   } else if (repo.visibility === 'PRIVATE' || (repo.isPrivate && !repo.visibility)) {
     line1 += chalk.yellow(' Private');
+  }
+  
+  // In stars mode, show indicator for org repos that might have OAuth restrictions
+  if (starsMode && repo.owner && repo.owner.__typename === 'Organization') {
+    line1 += chalk.gray(' [org]');
   }
   if (repo.isArchived) line1 += ' ' + chalk.bgGray.whiteBright(' Archived ') + ' ';
   if (repo.isFork && repo.parent) {

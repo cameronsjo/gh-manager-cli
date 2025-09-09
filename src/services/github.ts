@@ -246,6 +246,7 @@ export async function fetchViewerReposPage(
               isArchived
               stargazerCount
               forkCount
+              viewerHasStarred
               primaryLanguage {
                 name
                 color
@@ -253,6 +254,10 @@ export async function fetchViewerReposPage(
               updatedAt
               pushedAt
               diskUsage
+              owner {
+                __typename
+                login
+              }
               ${includeForkTracking ? `
               parent {
                 nameWithOwner
@@ -481,6 +486,8 @@ export async function fetchViewerReposPageUnified(
                   isArchived
                   stargazerCount
                   forkCount
+                  viewerHasStarred
+                  owner { __typename login }
                   primaryLanguage { name color }
                   updatedAt
                   pushedAt
@@ -516,6 +523,8 @@ export async function fetchViewerReposPageUnified(
                   isArchived
                   stargazerCount
                   forkCount
+                  viewerHasStarred
+                  owner { __typename login }
                   primaryLanguage { name color }
                   updatedAt
                   pushedAt
@@ -628,6 +637,8 @@ export async function searchRepositoriesUnified(
               isArchived
               stargazerCount
               forkCount
+              viewerHasStarred
+              owner { __typename login }
               primaryLanguage { name color }
               updatedAt
               pushedAt
@@ -720,6 +731,167 @@ export async function deleteRepositoryRest(
   });
   
   throw new Error(msg);
+}
+
+// Fetch starred repositories
+export async function getStarredRepositories(
+  client: ReturnType<typeof makeClient>,
+  first: number,
+  after?: string
+): Promise<{
+  nodes: RepoNode[];
+  endCursor?: string;
+  hasNextPage: boolean;
+  totalCount: number;
+  rateLimit: RateLimitInfo;
+}> {
+  logger.info('Fetching starred repositories', {
+    first,
+    after
+  });
+
+  const query = /* GraphQL */ `
+    query StarredRepos($first: Int!, $after: String) {
+      rateLimit {
+        limit
+        remaining
+        resetAt
+      }
+      viewer {
+        starredRepositories(
+          first: $first
+          after: $after
+          orderBy: { field: STARRED_AT, direction: DESC }
+        ) {
+          totalCount
+          pageInfo {
+            endCursor
+            hasNextPage
+          }
+          nodes {
+            id
+            name
+            nameWithOwner
+            description
+            visibility
+            isPrivate
+            isFork
+            isArchived
+            stargazerCount
+            forkCount
+            viewerHasStarred
+            owner {
+              __typename
+              login
+            }
+            primaryLanguage {
+              name
+              color
+            }
+            updatedAt
+            pushedAt
+            diskUsage
+            parent {
+              nameWithOwner
+            }
+            defaultBranchRef { name }
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    const res: any = await client(query, {
+      first,
+      after: after ?? null,
+    });
+
+    const data = res.viewer.starredRepositories;
+    
+    logger.info('Successfully fetched starred repositories', {
+      count: data.nodes?.length || 0,
+      totalCount: data.totalCount
+    });
+
+    return {
+      nodes: data.nodes as RepoNode[],
+      endCursor: data.pageInfo.endCursor,
+      hasNextPage: data.pageInfo.hasNextPage,
+      totalCount: data.totalCount,
+      rateLimit: res.rateLimit as RateLimitInfo,
+    };
+  } catch (error: any) {
+    logger.error('Failed to fetch starred repositories', {
+      error: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
+}
+
+// Star a repository
+export async function starRepository(
+  client: ReturnType<typeof makeClient>,
+  starrableId: string
+): Promise<void> {
+  logger.info('Starring repository', {
+    starrableId
+  });
+
+  const mutation = /* GraphQL */ `
+    mutation StarRepo($starrableId: ID!) {
+      addStar(input: { starrableId: $starrableId }) {
+        clientMutationId
+      }
+    }
+  `;
+
+  try {
+    await client(mutation, { starrableId });
+    logger.info('Successfully starred repository', {
+      starrableId
+    });
+  } catch (error: any) {
+    logger.error('Failed to star repository', {
+      starrableId,
+      error: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
+}
+
+// Unstar a repository
+export async function unstarRepository(
+  client: ReturnType<typeof makeClient>,
+  starrableId: string
+): Promise<void> {
+  logger.info('Unstarring repository', {
+    starrableId
+  });
+
+  const mutation = /* GraphQL */ `
+    mutation UnstarRepo($starrableId: ID!) {
+      removeStar(input: { starrableId: $starrableId }) {
+        clientMutationId
+      }
+    }
+  `;
+
+  try {
+    await client(mutation, { starrableId });
+    logger.info('Successfully unstarred repository', {
+      starrableId
+    });
+  } catch (error: any) {
+    logger.error('Failed to unstar repository', {
+      starrableId,
+      error: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
 }
 
 export async function archiveRepositoryById(

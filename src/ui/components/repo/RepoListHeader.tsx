@@ -13,6 +13,7 @@ interface RepoListHeaderProps {
   searchLoading: boolean;
   visibilityFilter?: 'all' | 'public' | 'private' | 'internal';
   isEnterprise?: boolean;
+  starsMode?: boolean;
 }
 
 export default function RepoListHeader({
@@ -24,7 +25,8 @@ export default function RepoListHeader({
   searchActive,
   searchLoading,
   visibilityFilter = 'all',
-  isEnterprise = false
+  isEnterprise = false,
+  starsMode = false
 }: RepoListHeaderProps) {
   const contextLabel = ownerContext === 'personal'
     ? 'Personal Account'
@@ -45,13 +47,18 @@ export default function RepoListHeader({
       {contextLabel && (
         <Text>{contextLabel}</Text>
       )}
+      {starsMode && (
+        <Text color="yellow" bold>
+          ⭐ Stars Mode
+        </Text>
+      )}
       <Text color="gray" dimColor>
         Sort: {sortKey} {sortDir === 'asc' ? '↑' : '↓'}
       </Text>
       <Text color="gray" dimColor>
         Fork Status - Commits Behind: {forkTracking ? 'ON' : 'OFF'}
       </Text>
-      {!!visibilityLabel && (
+      {!!visibilityLabel && !starsMode && (
         <Text color="yellow">
           Visibility: {visibilityLabel}
         </Text>

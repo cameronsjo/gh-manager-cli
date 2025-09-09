@@ -2,14 +2,15 @@ import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react'
 import { Box, Text, useApp, useInput, useStdout, Spacer, Newline } from 'ink';
 import TextInput from 'ink-text-input';
 import chalk from 'chalk';
-import { makeClient, fetchViewerReposPageUnified, searchRepositoriesUnified, deleteRepositoryRest, archiveRepositoryById, unarchiveRepositoryById, changeRepositoryVisibility, syncForkWithUpstream, getRepositoryFromCache, purgeApolloCacheFiles, inspectCacheStatus, updateCacheAfterDelete, updateCacheAfterArchive, updateCacheAfterVisibilityChange, updateCacheWithRepository, checkOrganizationIsEnterprise, OwnerAffiliation, fetchViewerOrganizations, fetchRestRateLimits, renameRepositoryById, updateCacheAfterRename } from '../../services/github';
+import { makeClient, fetchViewerReposPageUnified, searchRepositoriesUnified, deleteRepositoryRest, archiveRepositoryById, unarchiveRepositoryById, changeRepositoryVisibility, syncForkWithUpstream, getRepositoryFromCache, purgeApolloCacheFiles, inspectCacheStatus, updateCacheAfterDelete, updateCacheAfterArchive, updateCacheAfterVisibilityChange, updateCacheWithRepository, checkOrganizationIsEnterprise, OwnerAffiliation, fetchViewerOrganizations, fetchRestRateLimits, renameRepositoryById, updateCacheAfterRename, getStarredRepositories, starRepository, unstarRepository } from '../../services/github';
 import { getUIPrefs, storeUIPrefs, OwnerContext } from '../../config/config';
 import { makeApolloKey, makeSearchKey, isFresh, markFetched } from '../../services/apolloMeta';
 import type { RepoNode, RateLimitInfo, RestRateLimitInfo } from '../../types';
 import { exec } from 'child_process';
 import OrgSwitcher from '../OrgSwitcher';
 import { logger } from '../../lib/logger';
-import { DeleteModal, ArchiveModal, SyncModal, InfoModal, LogoutModal, VisibilityModal, SortModal, SortDirectionModal, ChangeVisibilityModal, CopyUrlModal, RenameModal } from '../components/modals';
+import { DeleteModal, ArchiveModal, SyncModal, InfoModal, LogoutModal, VisibilityModal, SortModal, SortDirectionModal, ChangeVisibilityModal, CopyUrlModal, RenameModal, StarModal } from '../components/modals';
+import { UnstarModal } from '../components/modals/UnstarModal';
 import { RepoRow, FilterInput, RepoListHeader } from '../components/repo';
 import { SlowSpinner } from '../components/common';
 import { truncate, formatDate, copyToClipboard } from '../../lib/utils';
@@ -160,6 +161,26 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   // Sort modal state
   const [sortMode, setSortMode] = useState(false);
   const [sortDirectionMode, setSortDirectionMode] = useState(false);
+  
+  // Stars mode state
+  const [starsMode, setStarsMode] = useState(false);
+  const [starredItems, setStarredItems] = useState<RepoNode[]>([]);
+  const [starredEndCursor, setStarredEndCursor] = useState<string | null>(null);
+  const [starredHasNextPage, setStarredHasNextPage] = useState(false);
+  const [starredTotalCount, setStarredTotalCount] = useState<number>(0);
+  const [starredLoading, setStarredLoading] = useState(false);
+  
+  // Unstar modal state
+  const [unstarMode, setUnstarMode] = useState(false);
+  const [unstarTarget, setUnstarTarget] = useState<RepoNode | null>(null);
+  const [unstarring, setUnstarring] = useState(false);
+  const [unstarError, setUnstarError] = useState<string | null>(null);
+  
+  // Star modal state (for normal mode)
+  const [starMode, setStarMode] = useState(false);
+  const [starTarget, setStarTarget] = useState<RepoNode | null>(null);
+  const [starring, setStarring] = useState(false);
+  const [starError, setStarError] = useState<string | null>(null);
 
   // Apply initial --org flag once (if provided)
   const appliedInitialOrg = useRef(false);
@@ -246,6 +267,142 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   }
   
   // Single sync execution function to prevent duplicate operations
+  // Fetch starred repositories
+  async function fetchStarredRepositories(after?: string | null, reset = false) {
+    setStarredLoading(true);
+    try {
+      const page = await getStarredRepositories(client, PAGE_SIZE, after ?? undefined);
+      
+      setStarredItems(prev => (reset || !after ? page.nodes : [...prev, ...page.nodes]));
+      setStarredEndCursor(page.endCursor ?? null);
+      setStarredHasNextPage(page.hasNextPage);
+      setStarredTotalCount(page.totalCount);
+      
+      if (page.rateLimit) {
+        setRateLimit(page.rateLimit);
+        setPrevRateLimit(page.rateLimit.remaining);
+      }
+      
+      setStarredLoading(false);
+    } catch (e: any) {
+      setStarredLoading(false);
+      setError(e.message || 'Failed to fetch starred repositories');
+    }
+  }
+  
+  // Handle unstar action
+  async function handleUnstar() {
+    if (!unstarTarget || unstarring) return;
+    
+    try {
+      setUnstarring(true);
+      const targetId = (unstarTarget as any).id;
+      
+      await unstarRepository(client, targetId);
+      
+      // Remove from starred items list
+      setStarredItems(prev => prev.filter((r: any) => r.id !== targetId));
+      setStarredTotalCount(c => Math.max(0, c - 1));
+      
+      // Adjust cursor if needed
+      setCursor(c => Math.max(0, Math.min(c, starredItems.length - 2)));
+      
+      trackSuccessfulOperation();
+      
+      // Close modal
+      setUnstarMode(false);
+      setUnstarTarget(null);
+      setUnstarError(null);
+      setUnstarring(false);
+    } catch (e: any) {
+      setUnstarring(false);
+      
+      // Check for OAuth access restriction error
+      const errorMsg = e.message || 'Failed to unstar repository';
+      if (errorMsg.includes('OAuth App access restrictions')) {
+        // Extract org name from the error or use the repo owner
+        const orgMatch = errorMsg.match(/`([^`]+)` organization/);
+        const orgName = orgMatch ? orgMatch[1] : unstarTarget?.nameWithOwner.split('/')[0];
+        
+        setUnstarError(
+          `Cannot unstar: The ${orgName} organization has OAuth access restrictions. ` +
+          `You'll need to unstar this repository directly on GitHub.`
+        );
+      } else {
+        setUnstarError(errorMsg);
+      }
+    }
+  }
+  
+  // Close unstar modal
+  function closeUnstarModal() {
+    setUnstarMode(false);
+    setUnstarTarget(null);
+    setUnstarError(null);
+    setUnstarring(false);
+  }
+  
+  // Handle star/unstar action (for normal mode)
+  async function handleStar() {
+    if (!starTarget || starring) return;
+    
+    const isStarred = starTarget.viewerHasStarred;
+    
+    try {
+      setStarring(true);
+      const targetId = (starTarget as any).id;
+      
+      if (isStarred) {
+        await unstarRepository(client, targetId);
+      } else {
+        await starRepository(client, targetId);
+      }
+      
+      // Update the repo in the list
+      const updateRepo = (r: any) => {
+        if (r.id === targetId) {
+          return { ...r, viewerHasStarred: !isStarred, stargazerCount: r.stargazerCount + (isStarred ? -1 : 1) };
+        }
+        return r;
+      };
+      
+      setItems(prev => prev.map(updateRepo));
+      setSearchItems(prev => prev.map(updateRepo));
+      
+      trackSuccessfulOperation();
+      
+      // Close modal
+      setStarMode(false);
+      setStarTarget(null);
+      setStarError(null);
+      setStarring(false);
+    } catch (e: any) {
+      setStarring(false);
+      
+      // Check for OAuth access restriction error
+      const errorMsg = e.message || `Failed to ${isStarred ? 'unstar' : 'star'} repository`;
+      if (errorMsg.includes('OAuth access restrictions')) {
+        const orgMatch = errorMsg.match(/`([^`]+)` organization/);
+        const orgName = orgMatch ? orgMatch[1] : starTarget?.nameWithOwner.split('/')[0];
+        
+        setStarError(
+          `Cannot ${isStarred ? 'unstar' : 'star'}: The ${orgName} organization has OAuth access restrictions. ` +
+          `You'll need to ${isStarred ? 'unstar' : 'star'} this repository directly on GitHub.`
+        );
+      } else {
+        setStarError(errorMsg);
+      }
+    }
+  }
+  
+  // Close star modal
+  function closeStarModal() {
+    setStarMode(false);
+    setStarTarget(null);
+    setStarError(null);
+    setStarring(false);
+  }
+
   async function executeSync() {
     if (!syncTarget || syncing) return;
     
@@ -467,6 +624,15 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     
     // Reset visibility filter to 'all' when switching organizations
     setVisibilityFilter('all');
+    
+    // Disable star mode when switching to non-personal context
+    if (newContext !== 'personal' && starsMode) {
+      setStarsMode(false);
+      setStarredItems([]);
+      setStarredHasNextPage(false);
+      setStarredEndCursor(null);
+      setStarredTotalCount(0);
+    }
     
     // Update affiliations based on context
     const newAffiliations = newContext === 'personal' 
@@ -765,8 +931,8 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     if (ui.sortDir && (ui.sortDir === 'asc' || ui.sortDir === 'desc')) {
       setSortDir(ui.sortDir);
     }
-    if (ui.forkTracking !== undefined) setForkTracking(ui.forkTracking);
-    else setForkTracking(true); // Default to ON if not set in config
+    // Fork tracking is now always ON
+    setForkTracking(true);
     
     // Load visibility filter
     if (ui.visibilityFilter && ['all', 'public', 'private', 'internal'].includes(ui.visibilityFilter)) {
@@ -1020,6 +1186,26 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       return;
     }
 
+    // When in unstar mode, trap inputs for modal
+    if (unstarMode) {
+      if (key.escape || (input && input.toUpperCase() === 'C')) {
+        closeUnstarModal();
+        return;
+      }
+      // Let the UnstarModal component handle other inputs
+      return;
+    }
+
+    // When in star mode, trap inputs for modal
+    if (starMode) {
+      if (key.escape || (input && input.toUpperCase() === 'C')) {
+        closeStarModal();
+        return;
+      }
+      // Let the StarModal component handle other inputs
+      return;
+    }
+
     // When in sync mode, trap inputs for modal
     if (syncMode) {
       if (key.escape || (input && input.toUpperCase() === 'C')) {
@@ -1119,26 +1305,30 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
         addDebugMessage('[ESC] Cleared search and returned to normal listing');
         return;
       }
-      // Down arrow in filter mode with search results - exit filter mode and select first item
-      if (key.downArrow && searchActive && visibleItems.length > 0) {
+      // Down arrow in filter mode with results - exit filter mode and select first item
+      // Works for both search mode and stars mode filtering
+      if (key.downArrow && (searchActive || (starsMode && filter.trim().length > 0)) && visibleItems.length > 0) {
         setFilterMode(false);
         setCursor(0); // Select first item
-        addDebugMessage('[DOWN] Exited filter mode and selected first search result');
+        addDebugMessage('[DOWN] Exited filter mode and selected first result');
         return;
       }
       // Let TextInput handle characters; Enter will exit via onSubmit
       return;
     }
 
-    // ESC key while viewing search results - clear search and return to normal listing
-    if (key.escape && searchActive) {
+    // ESC key while viewing search results or filtered stars - clear filter and return to normal listing
+    if (key.escape && (searchActive || (starsMode && filter.trim().length > 0))) {
       setFilter('');
-      setSearchItems([]);
-      setSearchEndCursor(null);
-      setSearchHasNextPage(false);
-      setSearchTotalCount(0);
+      if (!starsMode) {
+        // Only clear search-related state in non-stars mode
+        setSearchItems([]);
+        setSearchEndCursor(null);
+        setSearchHasNextPage(false);
+        setSearchTotalCount(0);
+      }
       setCursor(0); // Reset cursor to top
-      addDebugMessage('[ESC] Cleared search and returned to normal listing');
+      addDebugMessage('[ESC] Cleared filter and returned to normal listing');
       return;
     }
 
@@ -1227,8 +1417,8 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       return;
     }
 
-    // Sync fork with upstream modal (Ctrl+S)
-    if (key.ctrl && (input === 's' || input === 'S')) {
+    // Sync fork with upstream modal (Ctrl+F)
+    if (key.ctrl && (input === 'f' || input === 'F')) {
       const repo = visibleItems[cursor];
       if (repo && repo.isFork && repo.parent) {
         // Only show sync option for forks that are behind
@@ -1316,13 +1506,67 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       return;
     }
 
-    // Sort modal: show sort options
-    if (input && input.toUpperCase() === 'S') {
+    // Sort modal: show sort options (S key when not in stars mode)
+    if (input && input.toUpperCase() === 'S' && !key.shift && !key.ctrl) {
       setSortMode(true);
       return;
     }
     if (input && input.toUpperCase() === 'D') {
       setSortDirectionMode(true);
+      return;
+    }
+    
+    // Stars mode toggle (Shift+S) - only available in personal context
+    if (key.shift && input === 'S' && ownerContext === 'personal') {
+      const newStarsMode = !starsMode;
+      setStarsMode(newStarsMode);
+      setCursor(0);
+      
+      // Clear filter when toggling modes
+      setFilter('');
+      setFilterMode(false);
+      
+      if (newStarsMode) {
+        // Entering stars mode - fetch starred repositories
+        // Reset visibility filter since it doesn't apply to starred repos
+        setVisibilityFilter('all');
+        // Clear search items since we're switching to starred repos
+        setSearchItems([]);
+        setSearchEndCursor(null);
+        setSearchHasNextPage(false);
+        setSearchTotalCount(0);
+        fetchStarredRepositories(null, true);
+      } else {
+        // Exiting stars mode - clear search state
+        setSearchItems([]);
+        setSearchEndCursor(null);
+        setSearchHasNextPage(false);
+        setSearchTotalCount(0);
+      }
+      return;
+    }
+    
+    // Unstar action (U key) - only in stars mode
+    if (input && input.toUpperCase() === 'U' && starsMode) {
+      const repo = visibleItems[cursor];
+      if (repo) {
+        setUnstarTarget(repo);
+        setUnstarMode(true);
+        setUnstarError(null);
+        setUnstarring(false);
+      }
+      return;
+    }
+    
+    // Star/unstar toggle (Ctrl+S) - only in normal mode
+    if (key.ctrl && (input === 's' || input === 'S') && !starsMode) {
+      const repo = visibleItems[cursor];
+      if (repo) {
+        setStarTarget(repo);
+        setStarMode(true);
+        setStarError(null);
+        setStarring(false);
+      }
       return;
     }
 
@@ -1343,32 +1587,13 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       return;
     }
 
-    // Toggle fork tracking
-    if (input && input.toUpperCase() === 'F') {
-      setForkTracking((prev) => {
-        const next = !prev;
-        storeUIPrefs({ forkTracking: next });
-        
-        // Check if we need to refresh data
-        const needsRefresh = next && items.some(repo => 
-          repo.isFork && repo.parent && (!repo.defaultBranchRef?.target?.history || !repo.parent.defaultBranchRef?.target?.history)
-        );
-        
-        if (needsRefresh) {
-          // Current data lacks commit history, need full refresh with new fork tracking value
-          setSortingLoading(true);
-          fetchPage(null, true, true, next);
-        }
-        // If toggling OFF or data is already complete, just update display immediately
-        
-        return next;
-      });
-      return;
-    }
+    // Fork tracking is now always on - removed toggle
     
-    // Open visibility filter modal (V)
+    // Open visibility filter modal (V) - disabled in stars mode
     if (input && input.toUpperCase() === 'V') {
-      setVisibilityMode(true);
+      if (!starsMode) {
+        setVisibilityMode(true);
+      }
       return;
     }
   });
@@ -1420,7 +1645,8 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     return arr;
   }, [filtered, sortKey, sortDir]);
 
-  const searchActive = filter.trim().length >= 3;
+  // In stars mode, we never do GitHub search - just local filtering
+  const searchActive = !starsMode && filter.trim().length >= 3;
   
   // Apply visibility filter to search results too
   const filteredSearchItems = useMemo(() => {
@@ -1437,7 +1663,18 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     return result;
   }, [searchItems, visibilityFilter]);
   
-  const visibleItems = searchActive ? filteredSearchItems : filteredAndSorted;
+  // Apply filter to starred items if in stars mode
+  const filteredStarredItems = useMemo(() => {
+    if (!filter || filter.trim().length === 0) return starredItems;
+    
+    const lowerFilter = filter.toLowerCase();
+    return starredItems.filter(repo => 
+      repo.nameWithOwner.toLowerCase().includes(lowerFilter) ||
+      (repo.description && repo.description.toLowerCase().includes(lowerFilter))
+    );
+  }, [starredItems, filter]);
+  
+  const visibleItems = starsMode ? filteredStarredItems : (searchActive ? filteredSearchItems : filteredAndSorted);
   
   // Debug log
   useEffect(() => {
@@ -1485,7 +1722,12 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     const prefetchThreshold = Math.floor(visibleItems.length * 0.8);
     const nearEnd = visibleItems.length > 0 && cursor >= prefetchThreshold;
     
-    if (searchActive) {
+    if (starsMode) {
+      if (!starredLoading && starredHasNextPage && nearEnd) {
+        addDebugMessage(`[Infinite Scroll] Prefetching starred repos at ${cursor}/${visibleItems.length} (80% threshold: ${prefetchThreshold})`);
+        fetchStarredRepositories(starredEndCursor);
+      }
+    } else if (searchActive) {
       if (!searchLoading && searchHasNextPage && nearEnd) {
         addDebugMessage(`[Infinite Scroll] Prefetching search results at ${cursor}/${visibleItems.length} (80% threshold: ${prefetchThreshold})`);
         fetchSearchPage(searchEndCursor);
@@ -1497,7 +1739,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cursor, visibleItems.length, searchActive, searchLoading, searchHasNextPage, searchEndCursor, loading, loadingMore, hasNextPage, endCursor]);
+  }, [cursor, visibleItems.length, starsMode, starredLoading, starredHasNextPage, starredEndCursor, searchActive, searchLoading, searchHasNextPage, searchEndCursor, loading, loadingMore, hasNextPage, endCursor]);
 
   // Helper: open URL in default browser (cross-platform best-effort)
   function openInBrowser(url: string) {
@@ -2091,6 +2333,29 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
               onCopy={handleCopyUrl}
             />
           </Box>
+        ) : unstarMode && unstarTarget ? (
+          <Box height={contentHeight} alignItems="center" justifyContent="center">
+            <UnstarModal
+              visible={unstarMode}
+              repo={unstarTarget}
+              onConfirm={handleUnstar}
+              onCancel={closeUnstarModal}
+              isUnstarring={unstarring}
+              error={unstarError}
+            />
+          </Box>
+        ) : starMode && starTarget ? (
+          <Box height={contentHeight} alignItems="center" justifyContent="center">
+            <StarModal
+              visible={starMode}
+              repo={starTarget}
+              isStarred={starTarget.viewerHasStarred || false}
+              onConfirm={handleStar}
+              onCancel={closeStarModal}
+              isStarring={starring}
+              error={starError}
+            />
+          </Box>
         ) : (
           <>
             {/* Context/Filter/sort status */}
@@ -2104,6 +2369,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
               searchLoading={searchLoading}
               visibilityFilter={visibilityFilter}
               isEnterprise={isEnterpriseOrg}
+              starsMode={starsMode}
             />
 
             {/* Filter input */}
@@ -2145,7 +2411,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
               onSubmit={() => {
                 setFilterMode(false);
               }}
-              placeholder="Type to search (3+ chars for server search)..."
+              placeholder={starsMode ? "Type to filter starred repositories..." : "Type to search (3+ chars for server search)..."}
             />
           </Box>
         )}
@@ -2168,6 +2434,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
                       maxWidth={terminalWidth - 6}
                       spacingLines={spacingLines}
                       forkTracking={forkTracking}
+                      starsMode={starsMode}
                     />
                   );
                 })
@@ -2210,13 +2477,16 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
         {/* Line 2: Search and filtering */}
         <Box width={terminalWidth} justifyContent="center">
           <Text color="gray" dimColor={modalOpen ? true : undefined}>
-            / Search • S Sort • D Direction • T Density • F Fork Status • V Visibility
+            / Search • S Sort • D Direction • T Density{!starsMode && ' • V Visibility'}{ownerContext === 'personal' && ' • Shift+S Stars'}
           </Text>
         </Box>
         {/* Line 3: Repository actions */}
         <Box width={terminalWidth} justifyContent="center">
           <Text color="gray" dimColor={modalOpen ? true : undefined}>
-            I Info • C Copy URL • Ctrl+R Rename • Ctrl+A Un/Archive • Ctrl+V Change Visibility • Ctrl+S Sync Fork
+            {starsMode ? 
+              'I Info • C Copy URL • U Unstar Repository' :
+              'I Info • C Copy URL • Ctrl+S Un/Star • Ctrl+R Rename • Ctrl+A Un/Archive • Ctrl+V Change Visibility • Ctrl+F Sync Fork'
+            }
           </Text>
         </Box>
         {/* Line 4: System controls */}

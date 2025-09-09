@@ -40,14 +40,28 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npx semantic-release --dry-run --no-ci | tee semantic-output.txt
+          # Create a temporary config without npm plugin for dry-run check
+          cat > .releaserc-dryrun.json << 'EOF'
+          {
+            "branches": ["main"],
+            "plugins": [
+              "@semantic-release/commit-analyzer",
+              "@semantic-release/release-notes-generator"
+            ]
+          }
+          EOF
+          
+          # Run semantic-release with minimal config to check if a release is needed
+          npx semantic-release --dry-run --no-ci --extends ./.releaserc-dryrun.json 2>&1 | tee semantic-output.txt || true
+          
+          # Clean up temp config
+          rm -f .releaserc-dryrun.json
           
           # Check if a new release would be published
-          if grep -q "Published release" semantic-output.txt; then
+          if grep -q "The next release version is" semantic-output.txt; then
             echo "new_release_published=true" >> $GITHUB_OUTPUT
-            VERSION=$(grep -oP 'Published release \K[0-9]+\.[0-9]+\.[0-9]+' semantic-output.txt | head -1)
+            VERSION=$(grep -oE 'The next release version is [0-9]+\.[0-9]+\.[0-9]+' semantic-output.txt | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
             echo "new_release_version=${VERSION}" >> $GITHUB_OUTPUT
             echo "::notice::Semantic-release will publish version ${VERSION}"
           else

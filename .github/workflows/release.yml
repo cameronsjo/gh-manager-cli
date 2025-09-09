@@ -6,10 +6,59 @@ on:
   workflow_dispatch: # Manual trigger if needed
 
 jobs:
-  # Build binaries for multiple platforms
-  build:
+  # Check if semantic-release will create a new version
+  check-release:
     # Skip if commit message starts with 'chore(release):'
     if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    runs-on: ubuntu-latest
+    outputs:
+      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
+      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Run semantic-release in dry-run mode
+        id: semantic
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npx semantic-release --dry-run --no-ci | tee semantic-output.txt
+          
+          # Check if a new release would be published
+          if grep -q "Published release" semantic-output.txt; then
+            echo "new_release_published=true" >> $GITHUB_OUTPUT
+            VERSION=$(grep -oP 'Published release \K[0-9]+\.[0-9]+\.[0-9]+' semantic-output.txt | head -1)
+            echo "new_release_version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "::notice::Semantic-release will publish version ${VERSION}"
+          else
+            echo "new_release_published=false" >> $GITHUB_OUTPUT
+            echo "::notice::No new release will be published"
+          fi
+
+  # Build binaries for multiple platforms
+  build:
+    needs: check-release
+    if: needs.check-release.outputs.new_release_published == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -75,8 +124,8 @@ jobs:
 
   # Create release using semantic-release
   release:
-    needs: build
-    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    needs: [check-release, build]
+    if: needs.check-release.outputs.new_release_published == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -41,8 +41,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          # Create a temporary config without npm plugin for dry-run check
-          cat > .releaserc-dryrun.json << 'EOF'
+          # Create a minimal config for dry-run check (no npm plugin to avoid token issues)
+          cat > .releaserc.tmp.json << 'EOF'
           {
             "branches": ["main"],
             "plugins": [
@@ -52,11 +52,12 @@ jobs:
           }
           EOF
           
-          # Run semantic-release with minimal config to check if a release is needed
-          npx semantic-release --dry-run --no-ci --extends ./.releaserc-dryrun.json 2>&1 | tee semantic-output.txt || true
+          # Run semantic-release with the temp config to check if a release is needed
+          # Using --config to completely override the default config
+          npx semantic-release --dry-run --no-ci --config ./.releaserc.tmp.json 2>&1 | tee semantic-output.txt || true
           
           # Clean up temp config
-          rm -f .releaserc-dryrun.json
+          rm -f .releaserc.tmp.json
           
           # Check if a new release would be published
           if grep -q "The next release version is" semantic-output.txt; then

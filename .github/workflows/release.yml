@@ -146,8 +146,8 @@ jobs:
           path: gh-manager-cli-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}
           retention-days: 90
 
-  # Upload binaries to the GitHub release
-  upload-binaries:
+  # Create GitHub release and upload binaries
+  create-release:
     needs: build
     if: ${{ startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
@@ -170,28 +170,48 @@ jobs:
           ls -la ./binaries/
           find ./binaries -type f -exec ls -la {} \;
 
-      - name: Get version from package.json
+      - name: Get version and changelog
         id: get_version
         run: |
           VERSION=$(node -p "require('./package.json').version")
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "Version: ${VERSION}"
+          
+          # Extract changelog for this version
+          if [ -f "CHANGELOG.md" ]; then
+            # Extract content between this version and the previous version
+            CHANGELOG=$(awk "/^#+ \[?${VERSION}\]?/,/^#+ \[?[0-9]+\.[0-9]+\.[0-9]+\]?/" CHANGELOG.md | head -n -1)
+            if [ -z "$CHANGELOG" ]; then
+              # Fallback: try to get content after version heading
+              CHANGELOG=$(awk "/^#+ \[?${VERSION}\]?/,/^$/{print}" CHANGELOG.md)
+            fi
+            # Save to file for GitHub release
+            echo "$CHANGELOG" > release_notes.md
+          else
+            echo "# Release v${VERSION}" > release_notes.md
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.get_version.outputs.version }}
+        run: |
+          # Check if release already exists
+          if gh release view v${VERSION} > /dev/null 2>&1; then
+            echo "Release v${VERSION} already exists"
+          else
+            echo "Creating release v${VERSION}..."
+            gh release create v${VERSION} \
+              --title "v${VERSION}" \
+              --notes-file release_notes.md \
+              --verify-tag
+          fi
 
       - name: Upload binaries to release
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.get_version.outputs.version }}
         run: |
-          # Get the release ID for the version tag
-          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/v${VERSION} --jq '.id' || echo "")
-          
-          if [ -z "$RELEASE_ID" ]; then
-            echo "::error::Could not find release for tag v${VERSION}"
-            exit 1
-          fi
-          
-          echo "Uploading binaries to release ID: $RELEASE_ID"
-          
           # Upload each binary
           for file in binaries/*/*; do
             if [ -f "$file" ]; then
@@ -203,7 +223,7 @@ jobs:
 
   # Publish to other registries and update Homebrew
   publish-extras:
-    needs: upload-binaries
+    needs: create-release
     if: ${{ startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
     steps:

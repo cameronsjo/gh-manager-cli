@@ -1,3 +1,22 @@
+# [1.35.0](https://github.com/wiiiimm/gh-manager-cli/compare/v1.34.0...v1.35.0) (2025-09-09)
+
+
+### Bug Fixes
+
+* add npm authentication configuration for semantic-release ([d2d5ad0](https://github.com/wiiiimm/gh-manager-cli/commit/d2d5ad0555063d7e949450ff4a923c78d8a305f5))
+* ensure build job fetches updated version from semantic-release ([e8df4ec](https://github.com/wiiiimm/gh-manager-cli/commit/e8df4ec6a3e76c32168803f40a404567a979b530))
+* optimize release workflow to check before building ([5027d45](https://github.com/wiiiimm/gh-manager-cli/commit/5027d45ac564752a7557ee01e9529f9559d09a44))
+* resolve PR Title Manager workflow script loading issue ([5764938](https://github.com/wiiiimm/gh-manager-cli/commit/5764938c00ccaa524ebfac5e6e94ae64254195ab))
+* resolve Windows build failure in release pipeline ([708c0d3](https://github.com/wiiiimm/gh-manager-cli/commit/708c0d321b628ab95ca7b03ca07371059a7a19f1))
+* restore original workflow behavior for release pipeline ([2781719](https://github.com/wiiiimm/gh-manager-cli/commit/278171954e05048374cb756e6a242385c062c863))
+* use --config flag to fully override semantic-release config ([b233b58](https://github.com/wiiiimm/gh-manager-cli/commit/b233b583035e4e078f027147ca1dfb70c472be1f))
+* use minimal config for semantic-release dry-run check ([830d058](https://github.com/wiiiimm/gh-manager-cli/commit/830d0585a24942d1bee66aab55daa9770a0af0bb))
+
+
+### Features
+
+* add stars mode and star/unstar functionality ([#29](https://github.com/wiiiimm/gh-manager-cli/issues/29)) ([9295dcb](https://github.com/wiiiimm/gh-manager-cli/commit/9295dcb4508bf46d9dff0ffdfbcac35c40d8f994))
+
 # [1.34.0](https://github.com/wiiiimm/gh-manager-cli/compare/v1.33.0...v1.34.0) (2025-09-06)
 
 

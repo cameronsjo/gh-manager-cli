@@ -327,10 +327,10 @@ pnpm start:dev      # run with 5 repos per page and debug mode
 
 ### Release Process
 
-The project uses **automated releases** with two complementary workflows:
+The project uses a **two-phase automated release workflow**:
 
-#### 1. Semantic Release (Primary)
-- **Triggers**: On every push to `main` branch
+#### Phase 1: Version Creation
+- **Triggers**: On feature/fix commits to `main` branch
 - **Version Calculation**: Uses [semantic-release](https://semantic-release.gitbook.io/) to analyze commit messages:
   - `feat:` → Minor version bump (1.0.0 → 1.1.0)
   - `fix:` → Patch version bump (1.0.0 → 1.0.1)
@@ -338,37 +338,38 @@ The project uses **automated releases** with two complementary workflows:
 - **Actions**:
   1. Analyzes commits since last release
   2. Calculates new version number
-  3. Updates `package.json`
-  4. Generates changelog
-  5. Creates GitHub release with tag
-  6. Publishes to NPM
-  7. Publishes to GitHub Packages
-  8. Updates Homebrew tap
+  3. Updates `package.json` and `CHANGELOG.md`
+  4. Creates git tag
+  5. Publishes to NPM
+  6. Commits changes as `chore(release): X.Y.Z`
 
-#### 2. Version Change Detection (Backup)
-- **Triggers**: When `package.json` version field changes
-- **Purpose**: Ensures releases happen even with manual version bumps
+#### Phase 2: Binary Building & Distribution
+- **Triggers**: On `chore(release):` commits (from Phase 1)
 - **Actions**:
-  1. Detects version change in `package.json`
-  2. Publishes to NPM if version doesn't exist
-  3. Updates Homebrew formula
-  4. Creates GitHub release
+  1. Builds binaries for Linux, macOS, Windows
+  2. Creates GitHub release with changelog
+  3. Uploads binaries to release
+  4. Publishes to GitHub Packages
+  5. Updates Homebrew formula
 
 #### Release Flow Example
 ```
-Developer creates PR with commits:
+Developer merges PR with commits:
   - feat: add new feature
   - fix: resolve bug
     ↓
-PR merged to main
-    ↓
-semantic-release analyzes commits
+Phase 1: semantic-release analyzes commits
     ↓
 Calculates version: 1.2.3 → 1.3.0 (feat = minor)
+Creates commit: "chore(release): 1.3.0"
     ↓
-Updates package.json, creates changelog
+Phase 2: Build workflow triggers
     ↓
-Publishes everywhere (NPM, GitHub, Homebrew)
+Builds binaries with version 1.3.0
+    ↓
+Creates GitHub release with binaries
+    ↓
+Publishes to GitHub Packages & updates Homebrew
 ```
 
 #### Manual Release

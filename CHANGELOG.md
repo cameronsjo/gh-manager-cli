@@ -1,3 +1,10 @@
+# [1.38.0](https://github.com/wiiiimm/gh-manager-cli/compare/v1.37.0...v1.38.0) (2025-09-09)
+
+
+### Features
+
+* add GitHub Sponsors integration ([b73a8c2](https://github.com/wiiiimm/gh-manager-cli/commit/b73a8c244aa6a336b249bc573a019c307b56bfc5))
+
 # [1.37.0](https://github.com/wiiiimm/gh-manager-cli/compare/v1.36.0...v1.37.0) (2025-09-09)
 
 

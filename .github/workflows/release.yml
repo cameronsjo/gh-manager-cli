@@ -6,59 +6,10 @@ on:
   workflow_dispatch: # Manual trigger if needed
 
 jobs:
-  # Check if we should create a release
-  check-release:
-    runs-on: ubuntu-latest
-    outputs:
-      should_release: ${{ steps.analyze.outputs.should_release }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Analyze commits
-        id: analyze
-        run: |
-          # Skip if this is already a release commit
-          if [[ "${{ github.event.head_commit.message }}" == "chore(release):"* ]]; then
-            echo "::notice::Skipping - this is a release commit"
-            echo "should_release=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          # Skip if this is a merge commit from a release
-          if [[ "${{ github.event.head_commit.message }}" == *"chore(release):"* ]]; then
-            echo "::notice::Skipping - contains release commit"
-            echo "should_release=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          # Check if we have semantic commits that warrant a release
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          echo "Latest tag: $LATEST_TAG"
-          
-          # Get commits since last tag
-          COMMITS=$(git log ${LATEST_TAG}..HEAD --pretty=format:"%s" 2>/dev/null || echo "")
-          echo "Commits since last tag:"
-          echo "$COMMITS"
-          
-          # Check for semantic commits
-          if echo "$COMMITS" | grep -qE "^(feat|fix|perf|refactor|revert)(\(.+\))?!?:"; then
-            echo "::notice::Found semantic commits - will create release"
-            echo "should_release=true" >> $GITHUB_OUTPUT
-          elif echo "$COMMITS" | grep -qE "^BREAKING CHANGE:"; then
-            echo "::notice::Found breaking change - will create release"
-            echo "should_release=true" >> $GITHUB_OUTPUT
-          else
-            echo "::notice::No semantic commits found - skipping release"
-            echo "should_release=false" >> $GITHUB_OUTPUT
-          fi
-
   # Build binaries for multiple platforms
   build:
-    needs: check-release
-    if: needs.check-release.outputs.should_release == 'true'
+    # Skip if commit message starts with 'chore(release):'
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -124,8 +75,8 @@ jobs:
 
   # Create release using semantic-release
   release:
-    needs: [check-release, build]
-    if: needs.check-release.outputs.should_release == 'true'
+    needs: build
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

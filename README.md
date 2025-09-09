@@ -385,6 +385,8 @@ Both NPM and Homebrew will be automatically updated within minutes of any versio
 Environment variables:
 - `REPOS_PER_FETCH`: Number of repositories to fetch per page (1-50, default: 15)
 - `GH_MANAGER_DEBUG=1`: Enables debug mode with performance metrics, detailed errors, and console logging
+- `GH_TOKEN`: GitHub Personal Access Token (alternative to OAuth authentication)
+- `NO_COLOR`: Disable colored output in terminal
 
 Project layout:
 - `src/index.tsx` — CLI entry and error handling

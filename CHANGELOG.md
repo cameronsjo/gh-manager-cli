@@ -1,3 +1,10 @@
+# [1.36.0](https://github.com/wiiiimm/gh-manager-cli/compare/v1.35.1...v1.36.0) (2025-09-09)
+
+
+### Features
+
+* add GitHub release creation to workflow ([7f06bb1](https://github.com/wiiiimm/gh-manager-cli/commit/7f06bb1cdc5043dbf88ddf342c4c4b5359a41431))
+
 ## [1.35.1](https://github.com/wiiiimm/gh-manager-cli/compare/v1.35.0...v1.35.1) (2025-09-09)
 
 

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import envPaths from 'env-paths';
+import { logger } from '../lib/logger';
 
 type Density = 0 | 1 | 2;
 
@@ -38,7 +39,8 @@ export function readConfig(): ConfigShape {
     const data = fs.readFileSync(configFile, 'utf8');
     const json = JSON.parse(data);
     return json as ConfigShape;
-  } catch {
+  } catch (error) {
+    logger.debug('Failed to read config file', { error });
     return {};
   }
 }
@@ -51,8 +53,8 @@ export function writeConfig(cfg: ConfigShape) {
   if (process.platform !== 'win32') {
     try {
       fs.chmodSync(configFile, 0o600);
-    } catch {
-      // ignore
+    } catch (error) {
+      logger.debug('Failed to set permissions on config file', { error });
     }
   }
 }

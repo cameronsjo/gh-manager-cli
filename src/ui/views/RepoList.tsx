@@ -4,6 +4,7 @@ import TextInput from 'ink-text-input';
 import chalk from 'chalk';
 import { makeClient, fetchViewerReposPageUnified, searchRepositoriesUnified, deleteRepositoryRest, archiveRepositoryById, unarchiveRepositoryById, changeRepositoryVisibility, syncForkWithUpstream, getRepositoryFromCache, purgeApolloCacheFiles, inspectCacheStatus, updateCacheAfterDelete, updateCacheAfterArchive, updateCacheAfterVisibilityChange, updateCacheWithRepository, checkOrganizationIsEnterprise, OwnerAffiliation, fetchViewerOrganizations, fetchRestRateLimits, renameRepositoryById, updateCacheAfterRename, getStarredRepositories, starRepository, unstarRepository } from '../../services/github';
 import { getUIPrefs, storeUIPrefs, OwnerContext } from '../../config/config';
+import { DEFAULT_PAGE_SIZE, PREFETCH_THRESHOLD, DELETE_CODE_LENGTH, DEBUG_MESSAGE_LIMIT, MIN_SEARCH_LENGTH } from '../../config/constants';
 import { makeApolloKey, makeSearchKey, isFresh, markFetched } from '../../services/apolloMeta';
 import type { RepoNode, RateLimitInfo, RestRateLimitInfo } from '../../types';
 import { exec } from 'child_process';
@@ -15,8 +16,9 @@ import { UnstarModal } from '../components/modals/UnstarModal';
 import { RepoRow, FilterInput, RepoListHeader } from '../components/repo';
 import { SlowSpinner } from '../components/common';
 import { truncate, formatDate, copyToClipboard } from '../../lib/utils';
+import { useDebugMessages } from '../hooks/useDebugMessages';
 
-// Allow customizable repos per fetch via env var (1-50, default 15)
+// Allow customizable repos per fetch via env var (1-50, default from constants)
 const getPageSize = () => {
   const envValue = process.env.REPOS_PER_FETCH;
   if (envValue) {
@@ -25,7 +27,7 @@ const getPageSize = () => {
       return parsed;
     }
   }
-  return 15; // Default
+  return DEFAULT_PAGE_SIZE;
 };
 
 const PAGE_SIZE = getPageSize();
@@ -43,19 +45,26 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   const client = useMemo(() => makeClient(token), [token]);
   
   // Debug messages state
-  const [debugMessages, setDebugMessages] = useState<string[]>([]);
-  const addDebugMessage = useCallback((msg: string) => {
-    if (process.env.GH_MANAGER_DEBUG === '1') {
-      setDebugMessages(prev => [...prev.slice(-9), msg]); // Keep last 10 messages
-    }
-  }, []);
+  const { messages: debugMessages, addMessage: addDebugMessage } = useDebugMessages();
 
   // Stable reference to org context change handler to avoid unstable deps in effects
   const handleOrgContextChangeRef = useRef(onOrgContextChange);
   useEffect(() => {
     handleOrgContextChangeRef.current = onOrgContextChange;
   }, [onOrgContextChange]);
-  
+
+  // Search debounce timeout ref
+  const searchDebounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Cleanup search debounce timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (searchDebounceTimeoutRef.current) {
+        clearTimeout(searchDebounceTimeoutRef.current);
+      }
+    };
+  }, []);
+
   // Log on component mount
   React.useEffect(() => {
     addDebugMessage(`[RepoList] Component mounted`);
@@ -1139,7 +1148,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       }
     } else {
       // Re-run search with new sort
-      if (!searchLoading && filter.trim().length >= 3) {
+      if (!searchLoading && filter.trim().length >= MIN_SEARCH_LENGTH) {
         let policy: 'cache-first' | 'network-only' = 'cache-first';
         try {
           const key = makeSearchKey({
@@ -1173,7 +1182,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
         }
       } else {
         // Re-run search with new visibility filter
-        if (!searchLoading && filter.trim().length >= 3) {
+        if (!searchLoading && filter.trim().length >= MIN_SEARCH_LENGTH) {
           let policy: 'cache-first' | 'network-only' = 'network-only'; // Always fetch from network for visibility changes
           fetchSearchPage(null, true, policy);
         }
@@ -1486,9 +1495,9 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
         setDeleteMode(true);
         setTypedCode('');
         setDeleteError(null);
-        // Generate random 4-char uppercase code excluding 'C'
+        // Generate random DELETE_CODE_LENGTH-char uppercase code excluding 'C'
         const letters = 'ABDEFGHIJKLMNOPQRSTUVWXYZ';
-        const code = Array.from({ length: 4 }, () => letters[Math.floor(Math.random() * letters.length)]).join('');
+        const code = Array.from({ length: DELETE_CODE_LENGTH }, () => letters[Math.floor(Math.random() * letters.length)]).join('');
         setDeleteCode(code);
         setDeleteConfirmStage(false);
         setConfirmFocus('delete');
@@ -1814,7 +1823,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   }, [filtered, sortKey, sortDir]);
 
   // In stars mode, we never do GitHub search - just local filtering
-  const searchActive = !starsMode && filter.trim().length >= 3;
+  const searchActive = !starsMode && filter.trim().length >= MIN_SEARCH_LENGTH;
   
   // Apply visibility filter to search results too
   const filteredSearchItems = useMemo(() => {
@@ -1886,8 +1895,8 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
 
   // Infinite scroll: prefetch when at 80% of loaded items
   useEffect(() => {
-    // Trigger prefetch when cursor reaches 80% of the loaded items
-    const prefetchThreshold = Math.floor(visibleItems.length * 0.8);
+    // Trigger prefetch when cursor reaches PREFETCH_THRESHOLD of the loaded items
+    const prefetchThreshold = Math.floor(visibleItems.length * PREFETCH_THRESHOLD);
     const nearEnd = visibleItems.length > 0 && cursor >= prefetchThreshold;
     
     if (starsMode) {
@@ -1916,17 +1925,41 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     exec(cmd);
   }
 
-  const lowRate = (rateLimit && rateLimit.remaining <= Math.ceil(rateLimit.limit * 0.1)) || 
+  const lowRate = (rateLimit && rateLimit.remaining <= Math.ceil(rateLimit.limit * 0.1)) ||
                    (restRateLimit && restRateLimit.core.remaining <= Math.ceil(restRateLimit.core.limit * 0.1));
   const modalOpen = deleteMode || archiveMode || syncMode || logoutMode || infoMode || visibilityMode || sortMode || sortDirectionMode || changeVisibilityMode || copyUrlMode || renameMode || cloneMode;
+
+  // Memoized rate limit display component
+  const RateLimitDisplay = useMemo(() => {
+    if (!rateLimit && !restRateLimit) return null;
+
+    return (
+      <Text color={lowRate ? 'yellow' : 'gray'}>
+        GraphQL: {rateLimit ? `${rateLimit.remaining}/${rateLimit.limit}` : '---/---'}
+        {prevRateLimit !== undefined && rateLimit && prevRateLimit !== rateLimit.remaining && (
+          <Text color={rateLimit.remaining < prevRateLimit ? 'red' : 'green'}>
+            {` (${rateLimit.remaining - prevRateLimit > 0 ? '+' : ''}${rateLimit.remaining - prevRateLimit})`}
+          </Text>
+        )}
+        {' | '}
+        REST: {restRateLimit ? `${restRateLimit.core.remaining}/${restRateLimit.core.limit}` : '---/---'}
+        {prevRestRateLimit !== undefined && restRateLimit && prevRestRateLimit !== restRateLimit.core.remaining && (
+          <Text color={restRateLimit.core.remaining < prevRestRateLimit ? 'red' : 'green'}>
+            {` (${restRateLimit.core.remaining - prevRestRateLimit > 0 ? '+' : ''}${restRateLimit.core.remaining - prevRestRateLimit})`}
+          </Text>
+        )}
+        {'  '}
+      </Text>
+    );
+  }, [rateLimit, restRateLimit, lowRate, prevRateLimit, prevRestRateLimit]);
 
   // Memoize header to prevent re-renders - must be before any returns
   const headerBar = useMemo(() => (
     <Box flexDirection="row" justifyContent="space-between" height={1} marginBottom={1}>
       <Box flexDirection="row" gap={1}>
         <Text color="cyan" bold={!modalOpen} dimColor={modalOpen}>
-          {'  '}{ownerContext === 'personal' 
-            ? 'Personal' 
+          {'  '}{ownerContext === 'personal'
+            ? 'Personal'
             : ownerContext.name || ownerContext.login}
           {ownerContext !== 'personal' && isEnterpriseOrg && ' (ENT)'}
         </Text>
@@ -1940,27 +1973,10 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
           </Box>
         )}
       </Box>
-      
-      {(rateLimit || restRateLimit) && (
-        <Text color={lowRate ? 'yellow' : 'gray'}>
-          GraphQL: {rateLimit ? `${rateLimit.remaining}/${rateLimit.limit}` : '---/---'}
-          {prevRateLimit !== undefined && rateLimit && prevRateLimit !== rateLimit.remaining && (
-            <Text color={rateLimit.remaining < prevRateLimit ? 'red' : 'green'}>
-              {` (${rateLimit.remaining - prevRateLimit > 0 ? '+' : ''}${rateLimit.remaining - prevRateLimit})`}
-            </Text>
-          )}
-          {' | '}
-          REST: {restRateLimit ? `${restRateLimit.core.remaining}/${restRateLimit.core.limit}` : '---/---'}
-          {prevRestRateLimit !== undefined && restRateLimit && prevRestRateLimit !== restRateLimit.core.remaining && (
-            <Text color={restRateLimit.core.remaining < prevRestRateLimit ? 'red' : 'green'}>
-              {` (${restRateLimit.core.remaining - prevRestRateLimit > 0 ? '+' : ''}${restRateLimit.core.remaining - prevRestRateLimit})`}
-            </Text>
-          )}
-          {'  '}
-        </Text>
-      )}
+
+      {RateLimitDisplay}
     </Box>
-  ), [visibleItems.length, searchActive, searchTotalCount, totalCount, loading, searchLoading, rateLimit, lowRate, modalOpen, prevRateLimit, ownerContext, isEnterpriseOrg, restRateLimit, prevRestRateLimit]);
+  ), [visibleItems.length, searchActive, searchTotalCount, totalCount, loading, searchLoading, modalOpen, ownerContext, isEnterpriseOrg, RateLimitDisplay]);
 
   if (error) {
     return (
@@ -2104,12 +2120,12 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
                             value={typedCode}
                             onChange={(v) => {
                               const up = (v || '').toUpperCase();
-                              const cut = up.slice(0, 4);
+                              const cut = up.slice(0, DELETE_CODE_LENGTH);
                               setTypedCode(cut);
-                              if (cut.length < 4) {
+                              if (cut.length < DELETE_CODE_LENGTH) {
                                 setDeleteError(null);
                               }
-                              if (cut.length === 4) {
+                              if (cut.length === DELETE_CODE_LENGTH) {
                                 if (cut === deleteCode && deleteTarget) {
                                   setDeleteError(null);
                                   setDeleteConfirmStage(true);
@@ -2560,25 +2576,34 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
                 setFilter(val);
                 const q = (val || '').trim();
                 addDebugMessage(`[onChange] trimmed="${q}", len=${q.length}`);
+
+                // Debounce search: clear any pending timeout
+                if (searchDebounceTimeoutRef.current) {
+                  clearTimeout(searchDebounceTimeoutRef.current);
+                }
+
                 if (q.length >= 3) {
-                  // Kick off server search
-                  addDebugMessage(`[onChange] Triggering search for "${q}"`);
-                  let policy: 'cache-first' | 'network-only' = 'cache-first';
-                  try {
-                    const key = makeSearchKey({
-                      viewer: viewerLogin || 'unknown',
-                      q,
-                      sortKey,
-                      sortDir,
-                      pageSize: PAGE_SIZE,
-                      forkTracking,
-                    });
-                    policy = isFresh(key, 90 * 1000) ? 'cache-first' : 'network-only';
-                  } catch {}
-                  addDebugMessage(`[onChange] Calling fetchSearchPage with q="${q}"`);
-                  fetchSearchPage(null, true, policy, q);
+                  // Kick off server search after debounce delay
+                  addDebugMessage(`[onChange] Scheduling debounced search for "${q}"`);
+                  searchDebounceTimeoutRef.current = setTimeout(() => {
+                    addDebugMessage(`[onChange] Triggering search for "${q}"`);
+                    let policy: 'cache-first' | 'network-only' = 'cache-first';
+                    try {
+                      const key = makeSearchKey({
+                        viewer: viewerLogin || 'unknown',
+                        q,
+                        sortKey,
+                        sortDir,
+                        pageSize: PAGE_SIZE,
+                        forkTracking,
+                      });
+                      policy = isFresh(key, 90 * 1000) ? 'cache-first' : 'network-only';
+                    } catch {}
+                    addDebugMessage(`[onChange] Calling fetchSearchPage with q="${q}"`);
+                    fetchSearchPage(null, true, policy, q);
+                  }, 300);
                 } else {
-                  // Clear search results under threshold
+                  // Clear search results under threshold immediately
                   setSearchItems([]);
                   setSearchEndCursor(null);
                   setSearchHasNextPage(false);

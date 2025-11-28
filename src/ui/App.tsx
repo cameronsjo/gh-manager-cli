@@ -1,12 +1,16 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Box, Text, useApp, useStdout, useInput } from 'ink';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Box, Text, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
-import { getStoredToken, storeToken, getTokenFromEnv, clearStoredToken, clearAllSettings, OwnerContext, getTokenSource, TokenSource } from '../config/config';
+import { getStoredToken, storeToken, getTokenFromEnv, clearStoredToken, clearAllSettings, getTokenSource } from '../config/config';
+import type { OwnerContext, TokenSource } from '../config/config';
 import { makeClient, getViewerLogin } from '../services/github';
-import { pollForAccessToken, requestDeviceCode, DeviceCodeResponse } from '../services/oauth';
+import { pollForAccessToken, requestDeviceCode } from '../services/oauth';
+import type { DeviceCodeResponse } from '../services/oauth';
 import RepoList from './views/RepoList';
-import { AuthMethodSelector, AuthMethod, OAuthProgress, OAuthStatus } from './components/auth';
+import { AuthMethodSelector, OAuthProgress } from './components/auth';
+import type { AuthMethod, OAuthStatus } from './components/auth';
 import { logger } from '../lib/logger';
+import { useTerminalSize } from './hooks/useTerminalSize';
 
 // Import version from package.json
 const packageJson = require('../../package.json');
@@ -17,7 +21,7 @@ type SessionTokenOrigin = 'cli' | 'env' | 'stored' | 'oauth' | 'prompt';
 
 export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral }: { initialOrgSlug?: string; inlineToken?: string; inlineTokenEphemeral?: boolean }) {
   const { exit } = useApp();
-  const { stdout } = useStdout();
+  const dims = useTerminalSize();
   const [mode, setMode] = useState<Mode>('checking');
   const [token, setToken] = useState<string | null>(null);
   const [input, setInput] = useState('');
@@ -32,24 +36,6 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
   const [sessionTokenOrigin, setSessionTokenOrigin] = useState<SessionTokenOrigin>('stored');
   const [deviceCodeResponse, setDeviceCodeResponse] = useState<DeviceCodeResponse | null>(null);
   const [oauthDeviceCode, setOauthDeviceCode] = useState<{user_code: string; verification_uri: string} | null>(null);
-  const [dims, setDims] = useState(() => {
-    const cols = stdout?.columns ?? 100;
-    const rows = stdout?.rows ?? 30;
-    return { cols, rows };
-  });
-
-  useEffect(() => {
-    if (!stdout) return;
-    const onResize = () => {
-      const cols = stdout.columns ?? 100;
-      const rows = stdout.rows ?? 30;
-      setDims({ cols, rows });
-    };
-    stdout.on('resize', onResize);
-    return () => {
-      stdout.off?.('resize', onResize as any);
-    };
-  }, [stdout]);
 
   useEffect(() => {
     const env = getTokenFromEnv();
@@ -152,14 +138,14 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
   }, [mode]);
 
   // Handle authentication method selection
-  const handleAuthMethodSelect = (method: AuthMethod) => {
+  const handleAuthMethodSelect = useCallback((method: AuthMethod) => {
     setAuthMethod(method);
     if (method === 'pat') {
       setMode('prompt');
     } else if (method === 'oauth') {
       setMode('oauth_flow');
     }
-  };
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -270,18 +256,18 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
     })();
   }, [mode, token]);
 
-  const onSubmitToken = async () => {
+  const onSubmitToken = useCallback(async () => {
     if (!input.trim()) return;
     setToken(input.trim());
     setTokenSource('pat');
     setSessionTokenOrigin('prompt');
     setError(null);
     setMode('validating');
-  };
+  }, [input]);
 
   // Handle logout from child components
-  const handleLogout = () => {
-    logger.info('User logged out', { 
+  const handleLogout = useCallback(() => {
+    logger.info('User logged out', {
       previousUser: viewer,
       tokenOrigin: sessionTokenOrigin,
     });
@@ -292,7 +278,7 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
     setInput(''); // Clear the token input field
     setTokenSource('pat');
     setMode('auth_method_selection');
-  };
+  }, [viewer, sessionTokenOrigin]);
 
   // Handle keyboard input for different modes
   useInput((input, key) => {

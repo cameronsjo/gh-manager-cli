@@ -1,5 +1,30 @@
 export type Maybe<T> = T | null;
 
+/**
+ * Brand type for creating nominal types
+ * Prevents accidental mixing of semantically different strings
+ */
+declare const brand: unique symbol;
+export type Brand<T, TBrand extends string> = T & { readonly [brand]: TBrand };
+
+/**
+ * Branded type for GitHub repository IDs
+ * Ensures type safety when handling repository identifiers
+ */
+export type RepositoryId = Brand<string, 'RepositoryId'>;
+
+/**
+ * Branded type for GitHub organization IDs
+ * Ensures type safety when handling organization identifiers
+ */
+export type OrganizationId = Brand<string, 'OrganizationId'>;
+
+/**
+ * Branded type for GitHub user IDs
+ * Ensures type safety when handling user identifiers
+ */
+export type UserId = Brand<string, 'UserId'>;
+
 export interface Language {
   name: string;
   color?: string | null;

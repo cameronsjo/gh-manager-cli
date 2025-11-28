@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import envPaths from 'env-paths';
+import { DEFAULT_APOLLO_TTL_MS } from '../config/constants';
+import { logger } from '../lib/logger';
 
 type MetaFile = {
   version: number;
@@ -17,7 +19,9 @@ function readMeta(): MetaFile {
     const raw = fs.readFileSync(metaPath, 'utf8');
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object' && parsed.fetched) return parsed as MetaFile;
-  } catch {}
+  } catch (error) {
+    logger.debug('Failed to read Apollo cache meta file', { error });
+  }
   return { version: VERSION, fetched: {} };
 }
 
@@ -26,9 +30,15 @@ function writeMeta(meta: MetaFile) {
     fs.mkdirSync(dataDir, { recursive: true });
     fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), 'utf8');
     if (process.platform !== 'win32') {
-      try { fs.chmodSync(metaPath, 0o600); } catch {}
+      try {
+        fs.chmodSync(metaPath, 0o600);
+      } catch (error) {
+        logger.debug('Failed to set permissions on Apollo cache meta file', { error });
+      }
     }
-  } catch {}
+  } catch (error) {
+    logger.debug('Failed to write Apollo cache meta file', { error });
+  }
 }
 
 export function makeApolloKey(opts: {
@@ -59,7 +69,7 @@ export function makeSearchKey(opts: {
   return `search:${query}|viewer:${v}|sort:${opts.sortKey}:${opts.sortDir}|ps:${opts.pageSize}|forks:${opts.forkTracking ? '1' : '0'}`;
 }
 
-export function isFresh(key: string, ttlMs = Number(process.env.APOLLO_TTL_MS || 30 * 60 * 1000)) {
+export function isFresh(key: string, ttlMs = Number(process.env.APOLLO_TTL_MS || DEFAULT_APOLLO_TTL_MS)) {
   const meta = readMeta();
   const iso = meta.fetched[key];
   if (!iso) return false;

@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import { fetchViewerOrganizations, checkOrganizationIsEnterprise } from '../services/github';
 import { openGitHubAuthorizationPage } from '../services/oauth';
 import type { OrganizationNode } from '../types';
-import { OwnerContext } from '../config/config';
+import type { OwnerContext } from '../config/config';
 
 interface OrgSwitcherProps {
   token: string;

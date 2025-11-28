@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import envPaths from 'env-paths';
+import { MAX_LOG_FILE_SIZE, MAX_LOG_FILES } from '../config/constants';
 
 // Log levels with numeric values for comparison
 export enum LogLevel {
@@ -47,8 +48,8 @@ class Logger {
     this.logLevel = config.logLevel ?? (process.env.GH_MANAGER_DEBUG === '1' ? LogLevel.DEBUG : LogLevel.INFO);
     this.logToFile = config.logToFile ?? true;
     this.logToConsole = config.logToConsole ?? (process.env.GH_MANAGER_DEBUG === '1');
-    this.maxFileSize = config.maxFileSize ?? (5 * 1024 * 1024); // 5MB default
-    this.maxFiles = config.maxFiles ?? 5;
+    this.maxFileSize = config.maxFileSize ?? MAX_LOG_FILE_SIZE;
+    this.maxFiles = config.maxFiles ?? MAX_LOG_FILES;
     
     // Set up log directory - pass empty suffix to avoid '-nodejs' being appended
     const paths = envPaths('gh-manager-cli', { suffix: '' });

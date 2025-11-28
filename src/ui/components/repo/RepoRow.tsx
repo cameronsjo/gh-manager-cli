@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import chalk from 'chalk';
 import type { RepoNode } from '../../../types';
@@ -13,81 +13,123 @@ interface RepoRowProps {
   dim?: boolean;
   forkTracking: boolean;
   starsMode?: boolean;
+  multiSelectMode?: boolean;
+  isMultiSelected?: boolean;
 }
 
-export default function RepoRow({ 
-  repo, 
-  selected, 
-  index, 
-  maxWidth, 
-  spacingLines, 
-  dim, 
+function RepoRow({
+  repo,
+  selected,
+  index,
+  maxWidth,
+  spacingLines,
+  dim,
   forkTracking,
-  starsMode = false
+  starsMode = false,
+  multiSelectMode = false,
+  isMultiSelected = false
 }: RepoRowProps) {
   const langName = repo.primaryLanguage?.name || '';
   const langColor = repo.primaryLanguage?.color || '#666666';
-  
+
   // Calculate commits behind for forks - only show if tracking is enabled AND data is available
   const hasCommitData = repo.isFork && repo.parent && repo.defaultBranchRef && repo.parent.defaultBranchRef
     && repo.parent.defaultBranchRef.target?.history && repo.defaultBranchRef.target?.history;
-  
+
   const commitsBehind = hasCommitData
     ? (repo.parent.defaultBranchRef.target.history.totalCount - repo.defaultBranchRef.target.history.totalCount)
     : 0;
-  
+
   const showCommitsBehind = forkTracking && hasCommitData;
-  
-  // Build colored line 1
-  let line1 = '';
-  const numColor = selected ? chalk.cyan : chalk.gray;
-  const nameColor = selected ? chalk.cyan.bold : chalk.white;
-  line1 += numColor(`${String(index).padStart(3, ' ')}.`);
-  // Show star icon if the repo is starred
-  if (repo.viewerHasStarred) {
-    line1 += chalk.yellow(' ⭐');
-  }
-  line1 += nameColor(` ${repo.nameWithOwner}`);
-  // Use visibility field to properly distinguish between PRIVATE and INTERNAL
-  if (repo.visibility === 'INTERNAL') {
-    line1 += chalk.magenta(' Internal');
-  } else if (repo.visibility === 'PRIVATE' || (repo.isPrivate && !repo.visibility)) {
-    line1 += chalk.yellow(' Private');
-  }
-  
-  // In stars mode, show indicator for org repos that might have OAuth restrictions
-  if (starsMode && repo.owner && repo.owner.__typename === 'Organization') {
-    line1 += chalk.gray(' [org]');
-  }
-  if (repo.isArchived) line1 += ' ' + chalk.bgGray.whiteBright(' Archived ') + ' ';
-  if (repo.isFork && repo.parent) {
-    line1 += chalk.blue(` Fork of ${repo.parent.nameWithOwner}`);
-    if (showCommitsBehind) {
-      if (commitsBehind > 0) {
-        line1 += chalk.yellow(` (${commitsBehind} behind)`);
-      } else {
-        line1 += chalk.green(` (0 behind)`);
+
+  // Memoize expensive chalk formatting operations
+  const formattedText = useMemo(() => {
+    // Build colored line 1
+    let line1 = '';
+    const numColor = selected ? chalk.cyan : chalk.gray;
+    const nameColor = selected ? chalk.cyan.bold : chalk.white;
+
+    // Show multi-select checkbox if in multi-select mode
+    if (multiSelectMode) {
+      const checkbox = isMultiSelected ? chalk.green('☑') : chalk.gray('☐');
+      line1 += checkbox + ' ';
+    }
+
+    line1 += numColor(`${String(index).padStart(3, ' ')}.`);
+    // Show star icon if the repo is starred
+    if (repo.viewerHasStarred) {
+      line1 += chalk.yellow(' ⭐');
+    }
+    line1 += nameColor(` ${repo.nameWithOwner}`);
+    // Use visibility field to properly distinguish between PRIVATE and INTERNAL
+    if (repo.visibility === 'INTERNAL') {
+      line1 += chalk.magenta(' Internal');
+    } else if (repo.visibility === 'PRIVATE' || (repo.isPrivate && !repo.visibility)) {
+      line1 += chalk.yellow(' Private');
+    }
+
+    // In stars mode, show indicator for org repos that might have OAuth restrictions
+    if (starsMode && repo.owner && repo.owner.__typename === 'Organization') {
+      line1 += chalk.gray(' [org]');
+    }
+    if (repo.isArchived) line1 += ' ' + chalk.bgGray.whiteBright(' Archived ') + ' ';
+    if (repo.isFork && repo.parent) {
+      line1 += chalk.blue(` Fork of ${repo.parent.nameWithOwner}`);
+      if (showCommitsBehind) {
+        if (commitsBehind > 0) {
+          line1 += chalk.yellow(` (${commitsBehind} behind)`);
+        } else {
+          line1 += chalk.green(` (0 behind)`);
+        }
       }
     }
-  }
-  
-  // Build colored line 2
-  let line2 = '     ';
-  const metaColor = selected ? chalk.white : chalk.gray;
-  if (langName) line2 += chalk.hex(langColor)('● ') + metaColor(`${langName}  `);
-  line2 += metaColor(`★ ${repo.stargazerCount}  ⑂ ${repo.forkCount}  Updated ${formatDate(repo.updatedAt)}`);
-  
-  // Build line 3
-  const line3 = repo.description ? `     ${truncate(repo.description, Math.max(30, maxWidth - 10))}` : null;
-  
-  // Combine all lines with newlines
-  let fullText = line1 + '\n' + line2;
-  if (line3) fullText += '\n' + metaColor(line3);
-  
+
+    // Build colored line 2
+    let line2 = '     ';
+    const metaColor = selected ? chalk.white : chalk.gray;
+    if (langName) line2 += chalk.hex(langColor)('● ') + metaColor(`${langName}  `);
+    line2 += metaColor(`★ ${repo.stargazerCount}  ⑂ ${repo.forkCount}  Updated ${formatDate(repo.updatedAt)}`);
+
+    // Build line 3
+    const line3 = repo.description ? `     ${truncate(repo.description, Math.max(30, maxWidth - 10))}` : null;
+
+    // Combine all lines with newlines
+    let fullText = line1 + '\n' + line2;
+    if (line3) fullText += '\n' + metaColor(line3);
+
+    return fullText;
+  }, [
+    repo.id,
+    repo.nameWithOwner,
+    repo.visibility,
+    repo.isPrivate,
+    repo.isArchived,
+    repo.isFork,
+    repo.parent?.nameWithOwner,
+    repo.viewerHasStarred,
+    repo.owner?.__typename,
+    repo.stargazerCount,
+    repo.forkCount,
+    repo.updatedAt,
+    repo.description,
+    selected,
+    index,
+    maxWidth,
+    dim,
+    forkTracking,
+    starsMode,
+    multiSelectMode,
+    isMultiSelected,
+    langName,
+    langColor,
+    commitsBehind,
+    showCommitsBehind
+  ]);
+
   // Calculate spacing for above and below
   const spacingAbove = Math.floor(spacingLines / 2);
   const spacingBelow = spacingLines - spacingAbove;
-  
+
   return (
     <Box flexDirection="column" backgroundColor={selected ? 'gray' : undefined}>
       {spacingAbove > 0 && (
@@ -95,7 +137,7 @@ export default function RepoRow({
           <Text> </Text>
         </Box>
       )}
-      <Text>{dim ? chalk.dim(fullText) : fullText}</Text>
+      <Text>{dim ? chalk.dim(formattedText) : formattedText}</Text>
       {spacingBelow > 0 && (
         <Box height={spacingBelow}>
           <Text> </Text>
@@ -104,4 +146,22 @@ export default function RepoRow({
     </Box>
   );
 }
+
+// Custom comparison function for React.memo
+function arePropsEqual(prevProps: RepoRowProps, nextProps: RepoRowProps): boolean {
+  return (
+    prevProps.repo.id === nextProps.repo.id &&
+    prevProps.selected === nextProps.selected &&
+    prevProps.dim === nextProps.dim &&
+    prevProps.forkTracking === nextProps.forkTracking &&
+    prevProps.starsMode === nextProps.starsMode &&
+    prevProps.multiSelectMode === nextProps.multiSelectMode &&
+    prevProps.isMultiSelected === nextProps.isMultiSelected &&
+    prevProps.spacingLines === nextProps.spacingLines &&
+    prevProps.maxWidth === nextProps.maxWidth &&
+    prevProps.index === nextProps.index
+  );
+}
+
+export default React.memo(RepoRow, arePropsEqual);
 

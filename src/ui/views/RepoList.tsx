@@ -4,18 +4,22 @@ import TextInput from 'ink-text-input';
 import chalk from 'chalk';
 import { makeClient, fetchViewerReposPageUnified, searchRepositoriesUnified, deleteRepositoryRest, archiveRepositoryById, unarchiveRepositoryById, changeRepositoryVisibility, syncForkWithUpstream, getRepositoryFromCache, purgeApolloCacheFiles, inspectCacheStatus, updateCacheAfterDelete, updateCacheAfterArchive, updateCacheAfterVisibilityChange, updateCacheWithRepository, checkOrganizationIsEnterprise, OwnerAffiliation, fetchViewerOrganizations, fetchRestRateLimits, renameRepositoryById, updateCacheAfterRename, getStarredRepositories, starRepository, unstarRepository } from '../../services/github';
 import { getUIPrefs, storeUIPrefs, OwnerContext } from '../../config/config';
+import { DEFAULT_PAGE_SIZE, PREFETCH_THRESHOLD, DELETE_CODE_LENGTH, DEBUG_MESSAGE_LIMIT, MIN_SEARCH_LENGTH } from '../../config/constants';
 import { makeApolloKey, makeSearchKey, isFresh, markFetched } from '../../services/apolloMeta';
 import type { RepoNode, RateLimitInfo, RestRateLimitInfo } from '../../types';
 import { exec } from 'child_process';
 import OrgSwitcher from '../OrgSwitcher';
 import { logger } from '../../lib/logger';
-import { DeleteModal, ArchiveModal, SyncModal, InfoModal, LogoutModal, VisibilityModal, SortModal, SortDirectionModal, ChangeVisibilityModal, CopyUrlModal, RenameModal, StarModal } from '../components/modals';
+import { DeleteModal, ArchiveModal, SyncModal, InfoModal, LogoutModal, VisibilityModal, SortModal, SortDirectionModal, ChangeVisibilityModal, CopyUrlModal, RenameModal, StarModal, CloneModal } from '../components/modals';
+import type { CloneType } from '../components/modals';
 import { UnstarModal } from '../components/modals/UnstarModal';
 import { RepoRow, FilterInput, RepoListHeader } from '../components/repo';
 import { SlowSpinner } from '../components/common';
 import { truncate, formatDate, copyToClipboard } from '../../lib/utils';
+import { useDebugMessages } from '../hooks/useDebugMessages';
+import { useModalState, useVirtualList } from '../hooks';
 
-// Allow customizable repos per fetch via env var (1-50, default 15)
+// Allow customizable repos per fetch via env var (1-50, default from constants)
 const getPageSize = () => {
   const envValue = process.env.REPOS_PER_FETCH;
   if (envValue) {
@@ -24,7 +28,7 @@ const getPageSize = () => {
       return parsed;
     }
   }
-  return 15; // Default
+  return DEFAULT_PAGE_SIZE;
 };
 
 const PAGE_SIZE = getPageSize();
@@ -42,19 +46,26 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   const client = useMemo(() => makeClient(token), [token]);
   
   // Debug messages state
-  const [debugMessages, setDebugMessages] = useState<string[]>([]);
-  const addDebugMessage = useCallback((msg: string) => {
-    if (process.env.GH_MANAGER_DEBUG === '1') {
-      setDebugMessages(prev => [...prev.slice(-9), msg]); // Keep last 10 messages
-    }
-  }, []);
+  const { messages: debugMessages, addMessage: addDebugMessage } = useDebugMessages();
 
   // Stable reference to org context change handler to avoid unstable deps in effects
   const handleOrgContextChangeRef = useRef(onOrgContextChange);
   useEffect(() => {
     handleOrgContextChangeRef.current = onOrgContextChange;
   }, [onOrgContextChange]);
-  
+
+  // Search debounce timeout ref
+  const searchDebounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Cleanup search debounce timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (searchDebounceTimeoutRef.current) {
+        clearTimeout(searchDebounceTimeoutRef.current);
+      }
+    };
+  }, []);
+
   // Log on component mount
   React.useEffect(() => {
     addDebugMessage(`[RepoList] Component mounted`);
@@ -105,36 +116,25 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   const [searchTotalCount, setSearchTotalCount] = useState<number>(0);
   const [searchLoading, setSearchLoading] = useState(false);
   // Delete modal state
-  const [deleteMode, setDeleteMode] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<RepoNode | null>(null);
+  const deleteModal = useModalState<RepoNode>();
   const [deleteCode, setDeleteCode] = useState('');
   const [typedCode, setTypedCode] = useState('');
-  const [deleting, setDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteConfirmStage, setDeleteConfirmStage] = useState(false); // true after code verified
   const [confirmFocus, setConfirmFocus] = useState<'delete' | 'cancel'>('delete');
 
   // Archive modal state
-  const [archiveMode, setArchiveMode] = useState(false);
-  const [archiveTarget, setArchiveTarget] = useState<RepoNode | null>(null);
-  const [archiving, setArchiving] = useState(false);
-  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const archiveModal = useModalState<RepoNode>();
   const [archiveFocus, setArchiveFocus] = useState<'confirm' | 'cancel'>('confirm');
 
   // Sync modal state
-  const [syncMode, setSyncMode] = useState(false);
-  const [syncTarget, setSyncTarget] = useState<RepoNode | null>(null);
-  const [syncing, setSyncing] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
+  const syncModal = useModalState<RepoNode>();
   const [syncFocus, setSyncFocus] = useState<'confirm' | 'cancel'>('confirm');
 
   // Rename modal state
-  const [renameMode, setRenameMode] = useState(false);
-  const [renameTarget, setRenameTarget] = useState<RepoNode | null>(null);
+  const renameModal = useModalState<RepoNode>();
 
   // Copy URL modal state
-  const [copyUrlMode, setCopyUrlMode] = useState(false);
-  const [copyUrlTarget, setCopyUrlTarget] = useState<RepoNode | null>(null);
+  const copyModal = useModalState<RepoNode>();
   const [copyToast, setCopyToast] = useState<string | null>(null);
   const [syncTrigger, setSyncTrigger] = useState(false); // Trigger to initiate sync
 
@@ -153,10 +153,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   const [hasInternalRepos, setHasInternalRepos] = useState(false);
   
   // Change visibility modal state
-  const [changeVisibilityMode, setChangeVisibilityMode] = useState(false);
-  const [changeVisibilityTarget, setChangeVisibilityTarget] = useState<RepoNode | null>(null);
-  const [changingVisibility, setChangingVisibility] = useState(false);
-  const [changeVisibilityError, setChangeVisibilityError] = useState<string | null>(null);
+  const visibilityChangeModal = useModalState<RepoNode>();
   
   // Sort modal state
   const [sortMode, setSortMode] = useState(false);
@@ -171,16 +168,18 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   const [starredLoading, setStarredLoading] = useState(false);
   
   // Unstar modal state
-  const [unstarMode, setUnstarMode] = useState(false);
-  const [unstarTarget, setUnstarTarget] = useState<RepoNode | null>(null);
-  const [unstarring, setUnstarring] = useState(false);
-  const [unstarError, setUnstarError] = useState<string | null>(null);
+  const unstarModal = useModalState<RepoNode>();
   
   // Star modal state (for normal mode)
-  const [starMode, setStarMode] = useState(false);
-  const [starTarget, setStarTarget] = useState<RepoNode | null>(null);
-  const [starring, setStarring] = useState(false);
-  const [starError, setStarError] = useState<string | null>(null);
+  const starModal = useModalState<RepoNode>();
+
+  // Multi-select mode state
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [selectedRepos, setSelectedRepos] = useState<Set<string>>(new Set());
+
+  // Clone modal state
+  const cloneModal = useModalState<RepoNode>();
+  const [cloneToast, setCloneToast] = useState<string | null>(null);
 
   // Apply initial --org flag once (if provided)
   const appliedInitialOrg = useRef(false);
@@ -228,42 +227,31 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   }
 
   function closeArchiveModal() {
-    setArchiveMode(false);
-    setArchiveTarget(null);
-    setArchiving(false);
-    setArchiveError(null);
+    archiveModal.close();
     setArchiveFocus('confirm');
   }
   
   function closeChangeVisibilityModal() {
-    setChangeVisibilityMode(false);
-    setChangeVisibilityTarget(null);
-    setChangingVisibility(false);
-    setChangeVisibilityError(null);
+    visibilityChangeModal.close();
   }
 
   function closeSyncModal() {
-    setSyncMode(false);
-    setSyncTarget(null);
-    setSyncing(false);
-    setSyncError(null);
+    syncModal.close();
     setSyncFocus('confirm');
     setSyncTrigger(false);
   }
 
   function closeRenameModal() {
-    setRenameMode(false);
-    setRenameTarget(null);
+    renameModal.close();
   }
 
   function closeCopyUrlModal() {
-    setCopyUrlMode(false);
-    setCopyUrlTarget(null);
+    copyModal.close();
   }
 
   function openCopyUrlModal(repo: RepoNode) {
-    setCopyUrlMode(true);
-    setCopyUrlTarget(repo);
+    copyModal.open(repo);
+    copyModal.open(repo);
   }
   
   // Single sync execution function to prevent duplicate operations
@@ -292,11 +280,11 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   
   // Handle unstar action
   async function handleUnstar() {
-    if (!unstarTarget || unstarring) return;
+    if (!unstarModal.target || unstarModal.loading) return;
     
     try {
-      setUnstarring(true);
-      const targetId = (unstarTarget as any).id;
+      unstarModal.setLoading(true);
+      const targetId = (unstarModal.target as any).id;
       
       await unstarRepository(client, targetId);
       
@@ -310,47 +298,45 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       trackSuccessfulOperation();
       
       // Close modal
-      setUnstarMode(false);
-      setUnstarTarget(null);
-      setUnstarError(null);
-      setUnstarring(false);
+      unstarModal.close();
+      unstarModal.setError(null);
+      unstarModal.setLoading(false);
     } catch (e: any) {
-      setUnstarring(false);
+      unstarModal.setLoading(false);
       
       // Check for OAuth access restriction error
       const errorMsg = e.message || 'Failed to unstar repository';
       if (errorMsg.includes('OAuth App access restrictions')) {
         // Extract org name from the error or use the repo owner
         const orgMatch = errorMsg.match(/`([^`]+)` organization/);
-        const orgName = orgMatch ? orgMatch[1] : unstarTarget?.nameWithOwner.split('/')[0];
+        const orgName = orgMatch ? orgMatch[1] : unstarModal.target?.nameWithOwner.split('/')[0];
         
-        setUnstarError(
+        unstarModal.setError(
           `Cannot unstar: The ${orgName} organization has OAuth access restrictions. ` +
           `You'll need to unstar this repository directly on GitHub.`
         );
       } else {
-        setUnstarError(errorMsg);
+        unstarModal.setError(errorMsg);
       }
     }
   }
   
   // Close unstar modal
   function closeUnstarModal() {
-    setUnstarMode(false);
-    setUnstarTarget(null);
-    setUnstarError(null);
-    setUnstarring(false);
+    unstarModal.close();
+    unstarModal.setError(null);
+    unstarModal.setLoading(false);
   }
   
   // Handle star/unstar action (for normal mode)
   async function handleStar() {
-    if (!starTarget || starring) return;
+    if (!starModal.target || starModal.loading) return;
     
-    const isStarred = starTarget.viewerHasStarred;
+    const isStarred = starModal.target.viewerHasStarred;
     
     try {
-      setStarring(true);
-      const targetId = (starTarget as any).id;
+      starModal.setLoading(true);
+      const targetId = (starModal.target as any).id;
       
       if (isStarred) {
         await unstarRepository(client, targetId);
@@ -372,60 +358,165 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       trackSuccessfulOperation();
       
       // Close modal
-      setStarMode(false);
-      setStarTarget(null);
-      setStarError(null);
-      setStarring(false);
+      starModal.close();
+      starModal.setError(null);
+      starModal.setLoading(false);
     } catch (e: any) {
-      setStarring(false);
+      starModal.setLoading(false);
       
       // Check for OAuth access restriction error
       const errorMsg = e.message || `Failed to ${isStarred ? 'unstar' : 'star'} repository`;
       if (errorMsg.includes('OAuth access restrictions')) {
         const orgMatch = errorMsg.match(/`([^`]+)` organization/);
-        const orgName = orgMatch ? orgMatch[1] : starTarget?.nameWithOwner.split('/')[0];
+        const orgName = orgMatch ? orgMatch[1] : starModal.target?.nameWithOwner.split('/')[0];
         
-        setStarError(
+        starModal.setError(
           `Cannot ${isStarred ? 'unstar' : 'star'}: The ${orgName} organization has OAuth access restrictions. ` +
           `You'll need to ${isStarred ? 'unstar' : 'star'} this repository directly on GitHub.`
         );
       } else {
-        setStarError(errorMsg);
+        starModal.setError(errorMsg);
       }
     }
   }
   
   // Close star modal
   function closeStarModal() {
-    setStarMode(false);
-    setStarTarget(null);
-    setStarError(null);
-    setStarring(false);
+    starModal.close();
+    starModal.setError(null);
+    starModal.setLoading(false);
+  }
+
+  // Close clone modal
+  function closeCloneModal() {
+    cloneModal.close();
+    cloneModal.setLoading(false);
+    cloneModal.setError(null);
+  }
+
+  // Toggle multi-select for a repo
+  function toggleRepoSelection(repoId: string) {
+    setSelectedRepos(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(repoId)) {
+        newSet.delete(repoId);
+      } else {
+        newSet.add(repoId);
+      }
+      return newSet;
+    });
+  }
+
+  // Get selected repos as array
+  function getSelectedReposArray(): RepoNode[] {
+    if (selectedRepos.size === 0) {
+      // If no repos selected, use the current cursor position
+      const repo = visibleItems[cursor];
+      return repo ? [repo] : [];
+    }
+    return visibleItems.filter((r: any) => selectedRepos.has(r.id));
+  }
+
+  // Timer ref for clone toast
+  const cloneToastTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Execute clone operation
+  async function executeClone(repos: RepoNode[], cloneType: CloneType, targetDir: string): Promise<void> {
+    if (cloneModal.loading || repos.length === 0) return;
+
+    try {
+      cloneModal.setLoading(true);
+      cloneModal.setError(null);
+
+      // Clear any existing timer before cloneModal.loading
+      if (cloneToastTimerRef.current) {
+        clearTimeout(cloneToastTimerRef.current);
+        cloneToastTimerRef.current = null;
+      }
+
+      // Build and execute clone commands
+      const results: { repo: string; success: boolean; error?: string }[] = [];
+
+      for (const repo of repos) {
+        const sshUrl = `git@github.com:${repo.nameWithOwner}.git`;
+        const repoName = repo.nameWithOwner.split('/')[1];
+        const clonePath = targetDir === '.' ? repoName : `${targetDir}/${repoName}`;
+
+        const cloneCmd = cloneType === 'bare'
+          ? `git clone --bare "${sshUrl}" "${clonePath}.git"`
+          : `git clone "${sshUrl}" "${clonePath}"`;
+
+        try {
+          await new Promise<void>((resolve, reject) => {
+            exec(cloneCmd, (error, stdout, stderr) => {
+              if (error) {
+                reject(new Error(stderr || error.message));
+              } else {
+                resolve();
+              }
+            });
+          });
+          results.push({ repo: repo.nameWithOwner, success: true });
+        } catch (e: any) {
+          results.push({ repo: repo.nameWithOwner, success: false, error: e.message });
+        }
+      }
+
+      // Show results
+      const successCount = results.filter(r => r.success).length;
+      const failCount = results.filter(r => !r.success).length;
+
+      if (failCount === 0) {
+        setCloneToast(`Successfully cloned ${successCount} ${successCount === 1 ? 'repository' : 'repositories'}`);
+        trackSuccessfulOperation();
+        closeCloneModal();
+        // Clear multi-select after successful clone
+        setSelectedRepos(new Set());
+        setMultiSelectMode(false);
+      } else if (successCount === 0) {
+        throw new Error(`Failed to clone: ${results[0].error}`);
+      } else {
+        setCloneToast(`Cloned ${successCount}/${repos.length} repositories (${failCount} failed)`);
+        closeCloneModal();
+        setSelectedRepos(new Set());
+        setMultiSelectMode(false);
+      }
+
+      // Set timer for toast
+      cloneToastTimerRef.current = setTimeout(() => {
+        setCloneToast(null);
+        cloneToastTimerRef.current = null;
+      }, 5000);
+
+    } catch (e: any) {
+      cloneModal.setLoading(false);
+      cloneModal.setError(e.message || 'Failed to clone repositories');
+    }
   }
 
   async function executeSync() {
-    if (!syncTarget || syncing) return;
+    if (!syncModal.target || syncModal.loading) return;
     
     try {
-      setSyncing(true);
-      const [owner, repo] = syncTarget.nameWithOwner.split('/');
-      const branchName = syncTarget.defaultBranchRef?.name || 'main';
+      syncModal.setLoading(true);
+      const [owner, repo] = syncModal.target.nameWithOwner.split('/');
+      const branchName = syncModal.target.defaultBranchRef?.name || 'main';
       const result = await syncForkWithUpstream(token, owner, repo, branchName);
       
       // After successful sync, update locally without fetching from GitHub
-      // GitHub sets updatedAt to current time when syncing, and commits behind becomes 0
+      // GitHub sets updatedAt to current time when syncModal.loading, and commits behind becomes 0
       const updatedRepo = {
-        ...syncTarget,
+        ...syncModal.target,
         updatedAt: new Date().toISOString(),
         // If we're tracking fork commits and this is a fork with parent data, set commits to be in sync
-        ...(forkTracking && syncTarget.isFork && syncTarget.parent && syncTarget.defaultBranchRef?.target?.history && syncTarget.parent.defaultBranchRef?.target?.history ? {
+        ...(forkTracking && syncModal.target.isFork && syncModal.target.parent && syncModal.target.defaultBranchRef?.target?.history && syncModal.target.parent.defaultBranchRef?.target?.history ? {
           defaultBranchRef: {
-            ...syncTarget.defaultBranchRef,
+            ...syncModal.target.defaultBranchRef,
             target: {
-              ...syncTarget.defaultBranchRef.target,
+              ...syncModal.target.defaultBranchRef.target,
               history: {
                 // Set fork's commit count equal to parent's (0 commits behind)
-                totalCount: syncTarget.parent.defaultBranchRef.target.history.totalCount
+                totalCount: syncModal.target.parent.defaultBranchRef.target.history.totalCount
               }
             }
           }
@@ -437,7 +528,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       
       // Update both regular and search items with the locally updated data
       const updateSyncedRepo = (r: any) => {
-        if (r.id === (syncTarget as any).id) {
+        if (r.id === (syncModal.target as any).id) {
           return updatedRepo;
         }
         return r;
@@ -446,20 +537,20 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       setSearchItems(prev => prev.map(updateSyncedRepo));
       closeSyncModal();
     } catch (e: any) {
-      setSyncing(false);
-      setSyncError(e.message || 'Failed to sync fork. Check permissions and network.');
+      syncModal.setLoading(false);
+      syncModal.setError(e.message || 'Failed to sync fork. Check permissions and network.');
       // Keep modal open on error so user can see the error message
     }
   }
 
   // Shared archive execution function to avoid duplication
   async function executeArchive() {
-    if (!archiveTarget || archiving) return;
+    if (!archiveModal.target || archiveModal.loading) return;
     
     try {
-      setArchiving(true);
-      const isArchived = archiveTarget.isArchived;
-      const id = (archiveTarget as any).id;
+      archiveModal.setLoading(true);
+      const isArchived = archiveModal.target.isArchived;
+      const id = (archiveModal.target as any).id;
       
       if (isArchived) {
         await unarchiveRepositoryById(client, id);
@@ -478,8 +569,8 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       trackSuccessfulOperation(); // Track the successful operation
       closeArchiveModal();
     } catch (e) {
-      setArchiving(false);
-      setArchiveError('Failed to update archive state. Check permissions.');
+      archiveModal.setLoading(false);
+      archiveModal.setError('Failed to update archive state. Check permissions.');
       // Keep modal open on error
     }
   }
@@ -549,22 +640,25 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     }
   }
 
-  // Clear timer on unmount
+  // Clear timers on unmount
   useEffect(() => {
     return () => {
       if (copyToastTimerRef.current) {
         clearTimeout(copyToastTimerRef.current);
+      }
+      if (cloneToastTimerRef.current) {
+        clearTimeout(cloneToastTimerRef.current);
       }
     };
   }, []);
   
   // Handler for changing visibility
   async function handleVisibilityChange(newVisibility: string) {
-    if (!changeVisibilityTarget || changingVisibility) return;
+    if (!visibilityChangeModal.target || visibilityChangeModal.loading) return;
     
     try {
-      setChangingVisibility(true);
-      const id = (changeVisibilityTarget as any).id;
+      visibilityChangeModal.setLoading(true);
+      const id = (visibilityChangeModal.target as any).id;
       
       await changeRepositoryVisibility(client, id, newVisibility as 'PUBLIC' | 'PRIVATE' | 'INTERNAL', token);
       
@@ -601,8 +695,8 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       
       closeChangeVisibilityModal();
     } catch (e: any) {
-      setChangingVisibility(false);
-      setChangeVisibilityError(e.message || 'Failed to change visibility. Check permissions.');
+      visibilityChangeModal.setLoading(false);
+      visibilityChangeModal.setError(e.message || 'Failed to change visibility. Check permissions.');
       // Keep modal open on error
     }
   }
@@ -664,49 +758,42 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   }
 
   function cancelDeleteModal() {
-    setDeleteMode(false);
-    setDeleteTarget(null);
+    deleteModal.close();
     setTypedCode('');
-    setDeleteError(null);
     setDeleteConfirmStage(false);
-    setDeleting(false);
     setConfirmFocus('delete');
   }
 
   async function confirmDeleteNow() {
-    if (!deleteTarget) return;
+    if (!deleteModal.target) return;
     try {
-      setDeleting(true);
+      deleteModal.setLoading(true);
       // REST: requires owner/repo and a token with delete_repo scope
-      const [owner, repo] = (deleteTarget.nameWithOwner || '').split('/');
+      const [owner, repo] = (deleteModal.target.nameWithOwner || '').split('/');
       await deleteRepositoryRest(token, owner, repo);
-      
+
       // Update Apollo cache
-      const targetId = (deleteTarget as any).id;
+      const targetId = (deleteModal.target as any).id;
       await updateCacheAfterDelete(token, targetId);
-      
+
       // Remove from both regular items and search items
       setItems((prev) => prev.filter((r: any) => r.id !== targetId));
       setSearchItems((prev) => prev.filter((r: any) => r.id !== targetId));
-      
+
       // Update counts
       setTotalCount((c) => Math.max(0, c - 1));
       if (searchActive) {
         setSearchTotalCount((c) => Math.max(0, c - 1));
       }
-      
+
       trackSuccessfulOperation(); // Track the successful operation
-      setDeleteMode(false);
-      setDeleteTarget(null);
+      deleteModal.close();
       setTypedCode('');
-      setDeleteError(null);
-      setDeleting(false);
       setDeleteConfirmStage(false);
       // Keep cursor in range
       setCursor((c) => Math.max(0, Math.min(c, visibleItems.length - 2)));
     } catch (e: any) {
-      setDeleting(false);
-      setDeleteError('Failed to delete repository. Ensure delete_repo scope and admin permissions.');
+      deleteModal.setError('Failed to delete repository. Ensure delete_repo scope and admin permissions.');
       // Keep modal open on error so user can see the error message
     }
   }
@@ -1018,7 +1105,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       }
     } else {
       // Re-run search with new sort
-      if (!searchLoading && filter.trim().length >= 3) {
+      if (!searchLoading && filter.trim().length >= MIN_SEARCH_LENGTH) {
         let policy: 'cache-first' | 'network-only' = 'cache-first';
         try {
           const key = makeSearchKey({
@@ -1052,7 +1139,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
         }
       } else {
         // Re-run search with new visibility filter
-        if (!searchLoading && filter.trim().length >= 3) {
+        if (!searchLoading && filter.trim().length >= MIN_SEARCH_LENGTH) {
           let policy: 'cache-first' | 'network-only' = 'network-only'; // Always fetch from network for visibility changes
           fetchSearchPage(null, true, policy);
         }
@@ -1130,7 +1217,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     }
     
     // When in delete mode, trap inputs for modal
-    if (deleteMode) {
+    if (deleteModal.isOpen) {
       if (key.escape || (input && input.toUpperCase() === 'C')) {
         cancelDeleteModal();
         return;
@@ -1160,7 +1247,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     }
 
     // When in archive mode, trap inputs for modal
-    if (archiveMode) {
+    if (archiveModal.isOpen) {
       if (key.escape || (input && input.toUpperCase() === 'C')) {
         closeArchiveModal();
         return;
@@ -1187,7 +1274,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     }
 
     // When in unstar mode, trap inputs for modal
-    if (unstarMode) {
+    if (unstarModal.isOpen) {
       if (key.escape || (input && input.toUpperCase() === 'C')) {
         closeUnstarModal();
         return;
@@ -1197,7 +1284,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     }
 
     // When in star mode, trap inputs for modal
-    if (starMode) {
+    if (starModal.isOpen) {
       if (key.escape || (input && input.toUpperCase() === 'C')) {
         closeStarModal();
         return;
@@ -1207,7 +1294,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     }
 
     // When in sync mode, trap inputs for modal
-    if (syncMode) {
+    if (syncModal.isOpen) {
       if (key.escape || (input && input.toUpperCase() === 'C')) {
         closeSyncModal();
         return;
@@ -1262,12 +1349,12 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     }
 
     // When rename modal is open, trap inputs for modal
-    if (renameMode) {
+    if (renameModal.isOpen) {
       return; // RenameModal component handles its own keyboard input
     }
 
     // When copy URL modal is open, trap inputs for modal
-    if (copyUrlMode) {
+    if (copyModal.isOpen) {
       return; // CopyUrlModal component handles its own keyboard input
     }
     
@@ -1277,7 +1364,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     }
     
     // When change visibility modal is open, trap inputs for modal
-    if (changeVisibilityMode) {
+    if (visibilityChangeModal.isOpen) {
       return; // ChangeVisibilityModal component handles its own keyboard input
     }
     
@@ -1289,6 +1376,11 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     // When sort direction modal is open, trap inputs for modal
     if (sortDirectionMode) {
       return; // SortDirectionModal component handles its own keyboard input
+    }
+
+    // When clone modal is open, trap inputs for modal
+    if (cloneModal.isOpen) {
+      return; // CloneModal component handles its own keyboard input
     }
 
     // When in filter mode, only handle input for the TextInput
@@ -1356,13 +1448,11 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     if (key.delete || key.backspace) {
       const repo = visibleItems[cursor];
       if (repo) {
-        setDeleteTarget(repo);
-        setDeleteMode(true);
+        deleteModal.open(repo);
         setTypedCode('');
-        setDeleteError(null);
-        // Generate random 4-char uppercase code excluding 'C'
+        // Generate random DELETE_CODE_LENGTH-char uppercase code excluding 'C'
         const letters = 'ABDEFGHIJKLMNOPQRSTUVWXYZ';
-        const code = Array.from({ length: 4 }, () => letters[Math.floor(Math.random() * letters.length)]).join('');
+        const code = Array.from({ length: DELETE_CODE_LENGTH }, () => letters[Math.floor(Math.random() * letters.length)]).join('');
         setDeleteCode(code);
         setDeleteConfirmStage(false);
         setConfirmFocus('delete');
@@ -1398,10 +1488,10 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     if (key.ctrl && (input === 'a' || input === 'A')) {
       const repo = visibleItems[cursor];
       if (repo) {
-        setArchiveTarget(repo);
-        setArchiveMode(true);
-        setArchiveError(null);
-        setArchiving(false);
+        archiveModal.open(repo);
+        archiveModal.open(repo);
+        archiveModal.setError(null);
+        archiveModal.setLoading(false);
         setArchiveFocus('confirm');
       }
       return;
@@ -1411,8 +1501,8 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     if (key.ctrl && (input === 'v' || input === 'V')) {
       const repo = visibleItems[cursor];
       if (repo) {
-        setChangeVisibilityTarget(repo);
-        setChangeVisibilityMode(true);
+        visibilityChangeModal.open(repo);
+        visibilityChangeModal.open(repo);
       }
       return;
     }
@@ -1428,10 +1518,10 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
           ? (repo.parent.defaultBranchRef.target.history.totalCount - repo.defaultBranchRef.target.history.totalCount)
           : 0;
         
-        setSyncTarget(repo);
-        setSyncMode(true);
-        setSyncError(null);
-        setSyncing(false);
+        syncModal.open(repo);
+        syncModal.open(repo);
+        syncModal.setError(null);
+        syncModal.setLoading(false);
         setSyncFocus('confirm');
       }
       return;
@@ -1494,8 +1584,8 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     if (key.ctrl && (input === 'r' || input === 'R')) {
       const repo = visibleItems[cursor];
       if (repo) {
-        setRenameMode(true);
-        setRenameTarget(repo);
+        renameModal.open(repo);
+        renameModal.open(repo);
       }
       return;
     }
@@ -1550,10 +1640,10 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     if (input && input.toUpperCase() === 'U' && starsMode) {
       const repo = visibleItems[cursor];
       if (repo) {
-        setUnstarTarget(repo);
-        setUnstarMode(true);
-        setUnstarError(null);
-        setUnstarring(false);
+        unstarModal.open(repo);
+        unstarModal.open(repo);
+        unstarModal.setError(null);
+        unstarModal.setLoading(false);
       }
       return;
     }
@@ -1562,10 +1652,10 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     if (key.ctrl && (input === 's' || input === 'S') && !starsMode) {
       const repo = visibleItems[cursor];
       if (repo) {
-        setStarTarget(repo);
-        setStarMode(true);
-        setStarError(null);
-        setStarring(false);
+        starModal.open(repo);
+        starModal.open(repo);
+        starModal.setError(null);
+        starModal.setLoading(false);
       }
       return;
     }
@@ -1588,11 +1678,53 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     }
 
     // Fork tracking is now always on - removed toggle
-    
+
     // Open visibility filter modal (V) - disabled in stars mode
-    if (input && input.toUpperCase() === 'V') {
+    if (input && input.toUpperCase() === 'V' && !key.ctrl) {
       if (!starsMode) {
         setVisibilityMode(true);
+      }
+      return;
+    }
+
+    // Clone modal (Shift+C)
+    if (key.shift && input === 'C') {
+      const reposToClone = getSelectedReposArray();
+      if (reposToClone.length > 0) {
+        cloneModal.open();
+        cloneModal.setError(null);
+      }
+      return;
+    }
+
+    // Toggle multi-select mode (M)
+    if (input && input.toUpperCase() === 'M' && !key.ctrl && !key.shift) {
+      setMultiSelectMode(prev => {
+        if (prev) {
+          // Exiting multi-select mode - clear selections
+          setSelectedRepos(new Set());
+        }
+        return !prev;
+      });
+      return;
+    }
+
+    // Space to toggle selection in multi-select mode
+    if (input === ' ' && multiSelectMode) {
+      const repo = visibleItems[cursor];
+      if (repo) {
+        toggleRepoSelection((repo as any).id);
+      }
+      return;
+    }
+
+    // Select all in multi-select mode (Ctrl+A when in multi-select)
+    if (key.ctrl && (input === 'a' || input === 'A') && multiSelectMode) {
+      // Toggle between select all and deselect all
+      if (selectedRepos.size === visibleItems.length) {
+        setSelectedRepos(new Set());
+      } else {
+        setSelectedRepos(new Set(visibleItems.map((r: any) => r.id)));
       }
       return;
     }
@@ -1646,7 +1778,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   }, [filtered, sortKey, sortDir]);
 
   // In stars mode, we never do GitHub search - just local filtering
-  const searchActive = !starsMode && filter.trim().length >= 3;
+  const searchActive = !starsMode && filter.trim().length >= MIN_SEARCH_LENGTH;
   
   // Apply visibility filter to search results too
   const filteredSearchItems = useMemo(() => {
@@ -1698,28 +1830,21 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
 
   const spacingLines = density; // map density to spacer lines
 
-  // Virtualize list: compute window around cursor if maxVisibleRows provided
-  const windowed = useMemo(() => {
-    const total = visibleItems.length;
-    // Approximate lines: name + stats + optional description (assume 3) + spacing lines
-    const LINES_PER_REPO = 3 + spacingLines;
-    const visibleRepos = Math.max(1, Math.floor(listHeight / LINES_PER_REPO));
-    
-    if (visibleRepos >= total) return { start: 0, end: total };
-    
-    // Add buffer zone to reduce re-renders when scrolling
-    const buffer = 2;
-    const half = Math.floor(visibleRepos / 2);
-    let start = Math.max(0, cursor - half - buffer);
-    start = Math.min(start, Math.max(0, total - visibleRepos));
-    const end = Math.min(total, start + visibleRepos + buffer);
-    return { start, end };
-  }, [visibleItems.length, cursor, listHeight, spacingLines]);
+  // Virtualize list: use optimized virtual scrolling hook
+  // Approximate lines: name + stats + optional description (assume 3) + spacing lines
+  const LINES_PER_REPO = 3 + spacingLines;
+  const { virtualItems, startIndex, endIndex } = useVirtualList({
+    items: visibleItems,
+    itemHeight: LINES_PER_REPO,
+    containerHeight: listHeight,
+    cursor,
+    overscan: 2
+  });
 
   // Infinite scroll: prefetch when at 80% of loaded items
   useEffect(() => {
-    // Trigger prefetch when cursor reaches 80% of the loaded items
-    const prefetchThreshold = Math.floor(visibleItems.length * 0.8);
+    // Trigger prefetch when cursor reaches PREFETCH_THRESHOLD of the loaded items
+    const prefetchThreshold = Math.floor(visibleItems.length * PREFETCH_THRESHOLD);
     const nearEnd = visibleItems.length > 0 && cursor >= prefetchThreshold;
     
     if (starsMode) {
@@ -1748,17 +1873,41 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     exec(cmd);
   }
 
-  const lowRate = (rateLimit && rateLimit.remaining <= Math.ceil(rateLimit.limit * 0.1)) || 
+  const lowRate = (rateLimit && rateLimit.remaining <= Math.ceil(rateLimit.limit * 0.1)) ||
                    (restRateLimit && restRateLimit.core.remaining <= Math.ceil(restRateLimit.core.limit * 0.1));
-  const modalOpen = deleteMode || archiveMode || syncMode || logoutMode || infoMode || visibilityMode || sortMode || sortDirectionMode || changeVisibilityMode || copyUrlMode || renameMode;
+  const modalOpen = deleteModal.isOpen || archiveModal.isOpen || syncModal.isOpen || logoutMode || infoMode || visibilityMode || sortMode || sortDirectionMode || visibilityChangeModal.isOpen || copyModal.isOpen || renameModal.isOpen || cloneModal.isOpen;
+
+  // Memoized rate limit display component
+  const RateLimitDisplay = useMemo(() => {
+    if (!rateLimit && !restRateLimit) return null;
+
+    return (
+      <Text color={lowRate ? 'yellow' : 'gray'}>
+        GraphQL: {rateLimit ? `${rateLimit.remaining}/${rateLimit.limit}` : '---/---'}
+        {prevRateLimit !== undefined && rateLimit && prevRateLimit !== rateLimit.remaining && (
+          <Text color={rateLimit.remaining < prevRateLimit ? 'red' : 'green'}>
+            {` (${rateLimit.remaining - prevRateLimit > 0 ? '+' : ''}${rateLimit.remaining - prevRateLimit})`}
+          </Text>
+        )}
+        {' | '}
+        REST: {restRateLimit ? `${restRateLimit.core.remaining}/${restRateLimit.core.limit}` : '---/---'}
+        {prevRestRateLimit !== undefined && restRateLimit && prevRestRateLimit !== restRateLimit.core.remaining && (
+          <Text color={restRateLimit.core.remaining < prevRestRateLimit ? 'red' : 'green'}>
+            {` (${restRateLimit.core.remaining - prevRestRateLimit > 0 ? '+' : ''}${restRateLimit.core.remaining - prevRestRateLimit})`}
+          </Text>
+        )}
+        {'  '}
+      </Text>
+    );
+  }, [rateLimit, restRateLimit, lowRate, prevRateLimit, prevRestRateLimit]);
 
   // Memoize header to prevent re-renders - must be before any returns
   const headerBar = useMemo(() => (
     <Box flexDirection="row" justifyContent="space-between" height={1} marginBottom={1}>
       <Box flexDirection="row" gap={1}>
         <Text color="cyan" bold={!modalOpen} dimColor={modalOpen}>
-          {'  '}{ownerContext === 'personal' 
-            ? 'Personal' 
+          {'  '}{ownerContext === 'personal'
+            ? 'Personal'
             : ownerContext.name || ownerContext.login}
           {ownerContext !== 'personal' && isEnterpriseOrg && ' (ENT)'}
         </Text>
@@ -1772,27 +1921,10 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
           </Box>
         )}
       </Box>
-      
-      {(rateLimit || restRateLimit) && (
-        <Text color={lowRate ? 'yellow' : 'gray'}>
-          GraphQL: {rateLimit ? `${rateLimit.remaining}/${rateLimit.limit}` : '---/---'}
-          {prevRateLimit !== undefined && rateLimit && prevRateLimit !== rateLimit.remaining && (
-            <Text color={rateLimit.remaining < prevRateLimit ? 'red' : 'green'}>
-              {` (${rateLimit.remaining - prevRateLimit > 0 ? '+' : ''}${rateLimit.remaining - prevRateLimit})`}
-            </Text>
-          )}
-          {' | '}
-          REST: {restRateLimit ? `${restRateLimit.core.remaining}/${restRateLimit.core.limit}` : '---/---'}
-          {prevRestRateLimit !== undefined && restRateLimit && prevRestRateLimit !== restRateLimit.core.remaining && (
-            <Text color={restRateLimit.core.remaining < prevRestRateLimit ? 'red' : 'green'}>
-              {` (${restRateLimit.core.remaining - prevRestRateLimit > 0 ? '+' : ''}${restRateLimit.core.remaining - prevRestRateLimit})`}
-            </Text>
-          )}
-          {'  '}
-        </Text>
-      )}
+
+      {RateLimitDisplay}
     </Box>
-  ), [visibleItems.length, searchActive, searchTotalCount, totalCount, loading, searchLoading, rateLimit, lowRate, modalOpen, prevRateLimit, ownerContext, isEnterpriseOrg, restRateLimit, prevRestRateLimit]);
+  ), [visibleItems.length, searchActive, searchTotalCount, totalCount, loading, searchLoading, modalOpen, ownerContext, isEnterpriseOrg, RateLimitDisplay]);
 
   if (error) {
     return (
@@ -1897,7 +2029,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
 
       {/* Main content container with border - fixed height */}
       <Box borderStyle="single" borderColor={modalOpen ? 'gray' : 'yellow'} paddingX={1} paddingY={1} marginX={1} height={contentHeight + containerPadding + 2} flexDirection="column">
-        {deleteMode && deleteTarget ? (
+        {deleteModal.isOpen && deleteModal.target ? (
           // Centered modal; hide list content while modal is open
           <Box height={contentHeight} alignItems="center" justifyContent="center">
             <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={3} paddingY={2} width={Math.min(terminalWidth - 8, 80)}>
@@ -1907,16 +2039,16 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
                         <Text> </Text>
                       </Box>
                       {(() => {
-                        const langName = deleteTarget.primaryLanguage?.name || '';
-                        const langColor = deleteTarget.primaryLanguage?.color || '#666666';
+                        const langName = deleteModal.target.primaryLanguage?.name || '';
+                        const langColor = deleteModal.target.primaryLanguage?.color || '#666666';
                         let line1 = '';
-                        line1 += chalk.white(deleteTarget.nameWithOwner);
-                        if (deleteTarget.isPrivate) line1 += chalk.yellow(' Private');
-                        if (deleteTarget.isArchived) line1 += chalk.gray.dim(' Archived');
-                        if (deleteTarget.isFork && deleteTarget.parent) line1 += chalk.blue(` Fork of ${deleteTarget.parent.nameWithOwner}`);
+                        line1 += chalk.white(deleteModal.target.nameWithOwner);
+                        if (deleteModal.target.isPrivate) line1 += chalk.yellow(' Private');
+                        if (deleteModal.target.isArchived) line1 += chalk.gray.dim(' Archived');
+                        if (deleteModal.target.isFork && deleteModal.target.parent) line1 += chalk.blue(` Fork of ${deleteModal.target.parent.nameWithOwner}`);
                         let line2 = '';
                         if (langName) line2 += chalk.hex(langColor)('● ') + chalk.gray(`${langName}  `);
-                        line2 += chalk.gray(`★ ${deleteTarget.stargazerCount}  ⑂ ${deleteTarget.forkCount}  Updated ${formatDate(deleteTarget.updatedAt)}`);
+                        line2 += chalk.gray(`★ ${deleteModal.target.stargazerCount}  ⑂ ${deleteModal.target.forkCount}  Updated ${formatDate(deleteModal.target.updatedAt)}`);
                         return (
                           <>
                             <Text>{line1}</Text>
@@ -1936,18 +2068,18 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
                             value={typedCode}
                             onChange={(v) => {
                               const up = (v || '').toUpperCase();
-                              const cut = up.slice(0, 4);
+                              const cut = up.slice(0, DELETE_CODE_LENGTH);
                               setTypedCode(cut);
-                              if (cut.length < 4) {
-                                setDeleteError(null);
+                              if (cut.length < DELETE_CODE_LENGTH) {
+                                deleteModal.setError(null);
                               }
-                              if (cut.length === 4) {
-                                if (cut === deleteCode && deleteTarget) {
-                                  setDeleteError(null);
+                              if (cut.length === DELETE_CODE_LENGTH) {
+                                if (cut === deleteCode && deleteModal.target) {
+                                  deleteModal.setError(null);
                                   setDeleteConfirmStage(true);
                                   setConfirmFocus('delete');
                                 } else {
-                                  setDeleteError('Code does not match');
+                                  deleteModal.setError('Code does not match');
                                 }
                               }
                             }}
@@ -2006,36 +2138,36 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
                           </Box>
                 </Box>
               )}
-          {deleteError && (
+          {deleteModal.error && (
             <Box marginTop={1}>
-              <Text color="magenta">{deleteError}</Text>
+              <Text color="magenta">{deleteModal.error}</Text>
             </Box>
           )}
-                      {deleting && (
+                      {deleteModal.loading && (
                         <Box marginTop={1}>
                           <Text color="yellow">Deleting...</Text>
                         </Box>
                       )}
             </Box>
           </Box>
-        ) : archiveMode && archiveTarget ? (
+        ) : archiveModal.isOpen && archiveModal.target ? (
           <Box height={contentHeight} alignItems="center" justifyContent="center">
-            <Box flexDirection="column" borderStyle="round" borderColor={archiveTarget.isArchived ? 'green' : 'yellow'} paddingX={3} paddingY={2} width={Math.min(terminalWidth - 8, 80)}>
-              <Text bold>{archiveTarget.isArchived ? 'Unarchive Confirmation' : 'Archive Confirmation'}</Text>
-              <Text color={archiveTarget.isArchived ? 'green' : 'yellow'}>
-                {archiveTarget.isArchived ? '↺  Unarchive repository?' : '⚠️  Archive repository?'}
+            <Box flexDirection="column" borderStyle="round" borderColor={archiveModal.target.isArchived ? 'green' : 'yellow'} paddingX={3} paddingY={2} width={Math.min(terminalWidth - 8, 80)}>
+              <Text bold>{archiveModal.target.isArchived ? 'Unarchive Confirmation' : 'Archive Confirmation'}</Text>
+              <Text color={archiveModal.target.isArchived ? 'green' : 'yellow'}>
+                {archiveModal.target.isArchived ? '↺  Unarchive repository?' : '⚠️  Archive repository?'}
               </Text>
               <Box height={1}><Text> </Text></Box>
-              <Text>{archiveTarget.nameWithOwner}</Text>
+              <Text>{archiveModal.target.nameWithOwner}</Text>
               <Box marginTop={1}>
                 <Text>
-                  {archiveTarget.isArchived ? 'This will make the repository active again.' : 'This will make the repository read-only.'}
+                  {archiveModal.target.isArchived ? 'This will make the repository active again.' : 'This will make the repository read-only.'}
                 </Text>
               </Box>
               <Box marginTop={1} flexDirection="row" justifyContent="center" gap={6}>
                 <Box
                   borderStyle="round"
-                  borderColor={archiveTarget.isArchived ? 'green' : 'yellow'}
+                  borderColor={archiveModal.target.isArchived ? 'green' : 'yellow'}
                   height={3}
                   width={20}
                   alignItems="center"
@@ -2044,8 +2176,8 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
                 >
                   <Text>
                     {archiveFocus === 'confirm' ? 
-                      chalk.bgGreen.white.bold(` ${archiveTarget.isArchived ? 'Unarchive' : 'Archive'} `) : 
-                      chalk.bold[archiveTarget.isArchived ? 'green' : 'yellow'](archiveTarget.isArchived ? 'Unarchive' : 'Archive')
+                      chalk.bgGreen.white.bold(` ${archiveModal.target.isArchived ? 'Unarchive' : 'Archive'} `) : 
+                      chalk.bold[archiveModal.target.isArchived ? 'green' : 'yellow'](archiveModal.target.isArchived ? 'Unarchive' : 'Archive')
                     }
                   </Text>
                 </Box>
@@ -2067,7 +2199,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
                 </Box>
               </Box>
               <Box marginTop={1} flexDirection="row" justifyContent="center">
-                <Text color="gray">Press Enter to {archiveFocus === 'confirm' ? (archiveTarget.isArchived ? 'Unarchive' : 'Archive') : 'Cancel'} | Y to {archiveTarget.isArchived ? 'Unarchive' : 'Archive'} | C to Cancel</Text>
+                <Text color="gray">Press Enter to {archiveFocus === 'confirm' ? (archiveModal.target.isArchived ? 'Unarchive' : 'Archive') : 'Cancel'} | Y to {archiveModal.target.isArchived ? 'Unarchive' : 'Archive'} | C to Cancel</Text>
               </Box>
               <Box marginTop={1}>
                 <TextInput
@@ -2082,27 +2214,27 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
                   }}
                 />
               </Box>
-              {archiveError && (
+              {archiveModal.error && (
                 <Box marginTop={1}>
-                  <Text color="magenta">{archiveError}</Text>
+                  <Text color="magenta">{archiveModal.error}</Text>
                 </Box>
               )}
-              {archiving && (
+              {archiveModal.loading && (
                 <Box marginTop={1}>
-                  <Text color="yellow">{archiveTarget.isArchived ? 'Unarchiving...' : 'Archiving...'}</Text>
+                  <Text color="yellow">{archiveModal.target.isArchived ? 'Unarchiving...' : 'Archiving...'}</Text>
                 </Box>
               )}
             </Box>
           </Box>
-        ) : syncMode && syncTarget ? (
+        ) : syncModal.isOpen && syncModal.target ? (
           <Box height={contentHeight} alignItems="center" justifyContent="center">
             <Box flexDirection="column" borderStyle="round" borderColor="blue" paddingX={3} paddingY={2} width={Math.min(terminalWidth - 8, 80)}>
               <Text bold>Sync Fork Confirmation</Text>
               <Text color="blue">⟲  Sync fork with upstream?</Text>
               <Box height={1}><Text> </Text></Box>
-              <Text>{syncTarget.nameWithOwner}</Text>
-              {syncTarget.parent && (
-                <Text color="gray">Upstream: {syncTarget.parent.nameWithOwner}</Text>
+              <Text>{syncModal.target.nameWithOwner}</Text>
+              {syncModal.target.parent && (
+                <Text color="gray">Upstream: {syncModal.target.parent.nameWithOwner}</Text>
               )}
               <Box marginTop={1}>
                 <Text>
@@ -2159,12 +2291,12 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
                   }}
                 />
               </Box>
-              {syncError && (
+              {syncModal.error && (
                 <Box marginTop={1}>
-                  <Text color="magenta">{syncError}</Text>
+                  <Text color="magenta">{syncModal.error}</Text>
                 </Box>
               )}
-              {syncing && (
+              {syncModal.loading && (
                 <Box marginTop={1}>
                   <Text color="yellow">Syncing...</Text>
                 </Box>
@@ -2302,58 +2434,67 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
               onCancel={() => setSortDirectionMode(false)}
             />
           </Box>
-        ) : changeVisibilityMode && changeVisibilityTarget ? (
+        ) : visibilityChangeModal.isOpen && visibilityChangeModal.target ? (
           <Box height={contentHeight} alignItems="center" justifyContent="center">
             <ChangeVisibilityModal
-              isOpen={changeVisibilityMode}
-              repoName={changeVisibilityTarget.nameWithOwner}
-              currentVisibility={changeVisibilityTarget.visibility}
-              isFork={changeVisibilityTarget.isFork}
+              isOpen={visibilityChangeModal.isOpen}
+              repoName={visibilityChangeModal.target.nameWithOwner}
+              currentVisibility={visibilityChangeModal.target.visibility}
+              isFork={visibilityChangeModal.target.isFork}
               isEnterprise={isEnterpriseOrg}
               onVisibilityChange={handleVisibilityChange}
               onClose={closeChangeVisibilityModal}
-              changing={changingVisibility}
-              error={changeVisibilityError}
+              changing={visibilityChangeModal.loading}
+              error={visibilityChangeModal.error}
             />
           </Box>
-        ) : renameMode && renameTarget ? (
+        ) : renameModal.isOpen && renameModal.target ? (
           <Box height={contentHeight} alignItems="center" justifyContent="center">
             <RenameModal
-              repo={renameTarget}
+              repo={renameModal.target}
               onRename={executeRename}
               onCancel={closeRenameModal}
             />
           </Box>
-        ) : copyUrlMode ? (
+        ) : copyModal.isOpen ? (
           <Box height={contentHeight} alignItems="center" justifyContent="center">
             <CopyUrlModal
-              repo={copyUrlTarget}
+              repo={copyModal.target}
               terminalWidth={terminalWidth}
               onClose={closeCopyUrlModal}
               onCopy={handleCopyUrl}
             />
           </Box>
-        ) : unstarMode && unstarTarget ? (
+        ) : unstarModal.isOpen && unstarModal.target ? (
           <Box height={contentHeight} alignItems="center" justifyContent="center">
             <UnstarModal
-              visible={unstarMode}
-              repo={unstarTarget}
+              visible={unstarModal.isOpen}
+              repo={unstarModal.target}
               onConfirm={handleUnstar}
               onCancel={closeUnstarModal}
-              isUnstarring={unstarring}
-              error={unstarError}
+              isUnstarring={unstarModal.loading}
+              error={unstarModal.error}
             />
           </Box>
-        ) : starMode && starTarget ? (
+        ) : starModal.isOpen && starModal.target ? (
           <Box height={contentHeight} alignItems="center" justifyContent="center">
             <StarModal
-              visible={starMode}
-              repo={starTarget}
-              isStarred={starTarget.viewerHasStarred || false}
+              visible={starModal.isOpen}
+              repo={starModal.target}
+              isStarred={starModal.target.viewerHasStarred || false}
               onConfirm={handleStar}
               onCancel={closeStarModal}
-              isStarring={starring}
-              error={starError}
+              isStarring={starModal.loading}
+              error={starModal.error}
+            />
+          </Box>
+        ) : cloneModal.isOpen ? (
+          <Box height={contentHeight} alignItems="center" justifyContent="center">
+            <CloneModal
+              repos={getSelectedReposArray()}
+              terminalWidth={terminalWidth}
+              onClose={closeCloneModal}
+              onClone={executeClone}
             />
           </Box>
         ) : (
@@ -2383,25 +2524,34 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
                 setFilter(val);
                 const q = (val || '').trim();
                 addDebugMessage(`[onChange] trimmed="${q}", len=${q.length}`);
+
+                // Debounce search: clear any pending timeout
+                if (searchDebounceTimeoutRef.current) {
+                  clearTimeout(searchDebounceTimeoutRef.current);
+                }
+
                 if (q.length >= 3) {
-                  // Kick off server search
-                  addDebugMessage(`[onChange] Triggering search for "${q}"`);
-                  let policy: 'cache-first' | 'network-only' = 'cache-first';
-                  try {
-                    const key = makeSearchKey({
-                      viewer: viewerLogin || 'unknown',
-                      q,
-                      sortKey,
-                      sortDir,
-                      pageSize: PAGE_SIZE,
-                      forkTracking,
-                    });
-                    policy = isFresh(key, 90 * 1000) ? 'cache-first' : 'network-only';
-                  } catch {}
-                  addDebugMessage(`[onChange] Calling fetchSearchPage with q="${q}"`);
-                  fetchSearchPage(null, true, policy, q);
+                  // Kick off server search after debounce delay
+                  addDebugMessage(`[onChange] Scheduling debounced search for "${q}"`);
+                  searchDebounceTimeoutRef.current = setTimeout(() => {
+                    addDebugMessage(`[onChange] Triggering search for "${q}"`);
+                    let policy: 'cache-first' | 'network-only' = 'cache-first';
+                    try {
+                      const key = makeSearchKey({
+                        viewer: viewerLogin || 'unknown',
+                        q,
+                        sortKey,
+                        sortDir,
+                        pageSize: PAGE_SIZE,
+                        forkTracking,
+                      });
+                      policy = isFresh(key, 90 * 1000) ? 'cache-first' : 'network-only';
+                    } catch {}
+                    addDebugMessage(`[onChange] Calling fetchSearchPage with q="${q}"`);
+                    fetchSearchPage(null, true, policy, q);
+                  }, 300);
                 } else {
-                  // Clear search results under threshold
+                  // Clear search results under threshold immediately
                   setSearchItems([]);
                   setSearchEndCursor(null);
                   setSearchHasNextPage(false);
@@ -2423,21 +2573,20 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
                   <Text color="gray" dimColor>Type at least 3 characters to search</Text>
                 </Box>
               ) : (
-                visibleItems.slice(windowed.start, windowed.end).map((repo, i) => {
-                  const idx = windowed.start + i;
-                  return (
-                    <RepoRow
-                      key={repo.nameWithOwner}
-                      repo={repo}
-                      selected={filterMode && searchActive ? false : idx === cursor}
-                      index={idx + 1}
-                      maxWidth={terminalWidth - 6}
-                      spacingLines={spacingLines}
-                      forkTracking={forkTracking}
-                      starsMode={starsMode}
-                    />
-                  );
-                })
+                virtualItems.map(({ item: repo, index: idx }) => (
+                  <RepoRow
+                    key={repo.nameWithOwner}
+                    repo={repo}
+                    selected={filterMode && searchActive ? false : idx === cursor}
+                    index={idx + 1}
+                    maxWidth={terminalWidth - 6}
+                    spacingLines={spacingLines}
+                    forkTracking={forkTracking}
+                    starsMode={starsMode}
+                    multiSelectMode={multiSelectMode}
+                    isMultiSelected={selectedRepos.has((repo as any).id)}
+                  />
+                ))
               )}
               
               {/* Infinite scroll loading indicator */}
@@ -2466,39 +2615,47 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
         )}
       </Box>
 
-      {/* Help footer - 5 lines */}
+      {/* Help footer - condensed, aligned shortcuts */}
       <Box marginTop={1} paddingX={1} flexDirection="column">
-        {/* Line 1: Basic navigation */}
+        {/* Multi-select indicator */}
+        {multiSelectMode && (
+          <Box width={terminalWidth} justifyContent="center" marginBottom={1}>
+            <Text color="cyan" bold>
+              Multi-Select: {selectedRepos.size} selected • Space Toggle • Ctrl+A All • M Exit • Shift+C Clone
+            </Text>
+          </Box>
+        )}
+        {/* Condensed shortcuts in aligned columns */}
         <Box width={terminalWidth} justifyContent="center">
           <Text color="gray" dimColor={modalOpen ? true : undefined}>
-            ↑↓ Navigate • Ctrl+G Top • G Bottom • ⏎/O Open • R Refresh
+            {starsMode ? (
+              // Stars mode shortcuts - condensed
+              '↑↓ Nav  / Search  S Sort  D Dir  T Dense  I Info  C Copy  U Unstar  W Org  R Refresh  Q Quit'
+            ) : multiSelectMode ? (
+              // Multi-select mode shortcuts - condensed
+              '↑↓ Nav  Space Select  Ctrl+A All  M Exit  Shift+C Clone  Q Quit'
+            ) : (
+              // Normal mode shortcuts - condensed into logical groups
+              `↑↓/G Nav  / Search  S Sort  D Dir  T Dense  ${ownerContext === 'personal' ? 'Shift+S Stars  ' : ''}V Vis  M Multi  Shift+C Clone  ⏎ Open`
+            )}
           </Text>
         </Box>
-        {/* Line 2: Search and filtering */}
+        {!multiSelectMode && !starsMode && (
+          <Box width={terminalWidth} justifyContent="center">
+            <Text color="gray" dimColor={modalOpen ? true : undefined}>
+              I Info  C Copy  Ctrl+S Star  Ctrl+R Rename  Ctrl+A Archive  Ctrl+V ChangeVis  Ctrl+F Sync  Del Delete
+            </Text>
+          </Box>
+        )}
         <Box width={terminalWidth} justifyContent="center">
           <Text color="gray" dimColor={modalOpen ? true : undefined}>
-            / Search • S Sort • D Direction • T Density{!starsMode && ' • V Visibility'}{ownerContext === 'personal' && ' • Shift+S Stars'}
+            {multiSelectMode || starsMode ? '' : 'K Cache  W Org  R Refresh  Ctrl+L Logout  Q Quit'}
           </Text>
         </Box>
-        {/* Line 3: Repository actions */}
-        <Box width={terminalWidth} justifyContent="center">
-          <Text color="gray" dimColor={modalOpen ? true : undefined}>
-            {starsMode ? 
-              'I Info • C Copy URL • U Unstar Repository' :
-              'I Info • C Copy URL • Ctrl+S Un/Star • Ctrl+R Rename • Ctrl+A Un/Archive • Ctrl+V Change Visibility • Ctrl+F Sync Fork'
-            }
-          </Text>
-        </Box>
-        {/* Line 4: System controls */}
-        <Box width={terminalWidth} justifyContent="center">
-          <Text color="gray" dimColor={modalOpen ? true : undefined}>
-            K Cache Info • W Org Switch • Del/Backspace Delete • Ctrl+L Logout • Q Quit
-          </Text>
-        </Box>
-        {/* Line 5: Sponsorship */}
+        {/* Sponsorship */}
         <Box width={terminalWidth} justifyContent="center" marginTop={1}>
           <Text color="yellow" dimColor={modalOpen ? true : undefined}>
-            💖 Sponsor on GitHub: github.com/sponsors/wiiiimm
+            💖 github.com/sponsors/wiiiimm
           </Text>
         </Box>
       </Box>
@@ -2522,6 +2679,15 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
         <Box marginTop={1} justifyContent="center">
           <Box borderStyle="round" borderColor={copyToast.includes('Failed') ? 'red' : 'green'} paddingX={2} paddingY={0}>
             <Text color={copyToast.includes('Failed') ? 'red' : 'green'}>{copyToast}</Text>
+          </Box>
+        </Box>
+      )}
+
+      {/* Clone toast notification */}
+      {cloneToast && (
+        <Box marginTop={1} justifyContent="center">
+          <Box borderStyle="round" borderColor={cloneToast.includes('Failed') || cloneToast.includes('failed') ? 'yellow' : 'green'} paddingX={2} paddingY={0}>
+            <Text color={cloneToast.includes('Failed') || cloneToast.includes('failed') ? 'yellow' : 'green'}>{cloneToast}</Text>
           </Box>
         </Box>
       )}

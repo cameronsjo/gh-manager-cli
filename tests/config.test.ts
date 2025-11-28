@@ -19,10 +19,22 @@ vi.mock('fs');
 vi.mock('env-paths', () => {
   return {
     default: vi.fn(() => ({
-      config: '/mock/config/dir'
+      config: '/mock/config/dir',
+      data: '/mock/data/dir',
+      log: '/mock/log/dir',
+      cache: '/mock/cache/dir',
+      temp: '/mock/temp/dir',
     }))
   };
 });
+vi.mock('../src/lib/logger', () => ({
+  logger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
 
 describe('config', () => {
   beforeEach(() => {

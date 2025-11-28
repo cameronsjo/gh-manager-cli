@@ -11,119 +11,160 @@ import { AuthMethodSelector, OAuthProgress } from './components/auth';
 import type { AuthMethod, OAuthStatus } from './components/auth';
 import { logger } from '../lib/logger';
 import { useTerminalSize } from './hooks/useTerminalSize';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 // Import version from package.json
 const packageJson = require('../../package.json');
 
-type Mode = 'checking' | 'auth_method_selection' | 'prompt' | 'validating' | 'oauth_flow' | 'ready' | 'error' | 'rate_limited';
+/**
+ * Discriminated union representing all possible application states.
+ * Each state variant includes only the data relevant to that state,
+ * ensuring type safety and preventing invalid state combinations.
+ */
+type AppState =
+  | { mode: 'checking' }
+  | { mode: 'auth_method_selection'; error?: string }
+  | { mode: 'prompt'; error?: string; input: string }
+  | { mode: 'validating'; token: string; sessionTokenOrigin: SessionTokenOrigin; wasRateLimited: boolean; rateLimitReset: string | null }
+  | { mode: 'oauth_flow'; deviceCodeResponse: DeviceCodeResponse | null; status: OAuthStatus; error?: string; deviceCode: { user_code: string; verification_uri: string } | null }
+  | { mode: 'ready'; viewer: string; token: string; tokenSource: TokenSource; sessionTokenOrigin: SessionTokenOrigin }
+  | { mode: 'error'; error: string }
+  | { mode: 'rate_limited'; resetAt: string | null; token: string; wasRateLimited: boolean };
 
 type SessionTokenOrigin = 'cli' | 'env' | 'stored' | 'oauth' | 'prompt';
 
 export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral }: { initialOrgSlug?: string; inlineToken?: string; inlineTokenEphemeral?: boolean }) {
   const { exit } = useApp();
   const dims = useTerminalSize();
-  const [mode, setMode] = useState<Mode>('checking');
-  const [token, setToken] = useState<string | null>(null);
-  const [input, setInput] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [viewer, setViewer] = useState<string | null>(null);
-  const [rateLimitReset, setRateLimitReset] = useState<string | null>(null);
-  const [wasRateLimited, setWasRateLimited] = useState(false);
+
+  // Single state object using discriminated union for type safety
+  const [appState, setAppState] = useState<AppState>({ mode: 'checking' });
+
+  // UI-only state (not part of core app state machine)
   const [orgContext, setOrgContext] = useState<OwnerContext>('personal');
   const [authMethod, setAuthMethod] = useState<AuthMethod>('pat');
-  const [oauthStatus, setOAuthStatus] = useState<OAuthStatus>('initializing');
-  const [tokenSource, setTokenSource] = useState<TokenSource>('pat');
-  const [sessionTokenOrigin, setSessionTokenOrigin] = useState<SessionTokenOrigin>('stored');
-  const [deviceCodeResponse, setDeviceCodeResponse] = useState<DeviceCodeResponse | null>(null);
-  const [oauthDeviceCode, setOauthDeviceCode] = useState<{user_code: string; verification_uri: string} | null>(null);
 
+  /**
+   * Type-safe state transition helpers.
+   * Each function ensures the correct data is provided for each state.
+   */
+  const transitionTo = {
+    checking: () => setAppState({ mode: 'checking' }),
+
+    authMethodSelection: (error?: string) =>
+      setAppState({ mode: 'auth_method_selection', error }),
+
+    prompt: (input: string = '', error?: string) =>
+      setAppState({ mode: 'prompt', input, error }),
+
+    validating: (token: string, sessionTokenOrigin: SessionTokenOrigin, wasRateLimited: boolean = false, rateLimitReset: string | null = null) =>
+      setAppState({ mode: 'validating', token, sessionTokenOrigin, wasRateLimited, rateLimitReset }),
+
+    oauthFlow: (deviceCodeResponse: DeviceCodeResponse | null = null, status: OAuthStatus = 'initializing', error?: string, deviceCode: { user_code: string; verification_uri: string } | null = null) =>
+      setAppState({ mode: 'oauth_flow', deviceCodeResponse, status, error, deviceCode }),
+
+    ready: (viewer: string, token: string, tokenSource: TokenSource, sessionTokenOrigin: SessionTokenOrigin) =>
+      setAppState({ mode: 'ready', viewer, token, tokenSource, sessionTokenOrigin }),
+
+    error: (error: string) =>
+      setAppState({ mode: 'error', error }),
+
+    rateLimited: (resetAt: string | null, token: string, wasRateLimited: boolean = true) =>
+      setAppState({ mode: 'rate_limited', resetAt, token, wasRateLimited }),
+  };
+
+  /**
+   * Helper to update OAuth flow state while preserving other fields
+   */
+  const updateOAuthFlow = (updates: Partial<Extract<AppState, { mode: 'oauth_flow' }>>) => {
+    if (appState.mode === 'oauth_flow') {
+      setAppState({ ...appState, ...updates });
+    }
+  };
+
+  /**
+   * Helper to update prompt state while preserving other fields
+   */
+  const updatePrompt = (updates: Partial<Extract<AppState, { mode: 'prompt' }>>) => {
+    if (appState.mode === 'prompt') {
+      setAppState({ ...appState, ...updates });
+    }
+  };
+
+  // Initialize authentication: check for tokens in order of precedence
   useEffect(() => {
     const env = getTokenFromEnv();
     const stored = getStoredToken();
-    const source = getTokenSource();
-
-    // Baseline from stored config
-    setTokenSource(source);
 
     if (inlineToken) {
       // Highest precedence: inline token from CLI flag; do not persist
-      setToken(inlineToken);
-      setSessionTokenOrigin('cli');
-      setTokenSource('pat');
-      setMode('validating');
+      transitionTo.validating(inlineToken, 'cli');
     } else if (env) {
-      setToken(env);
-      setSessionTokenOrigin('env');
-      setTokenSource('pat');
-      setMode('validating');
+      transitionTo.validating(env, 'env');
     } else if (stored) {
-      setToken(stored);
-      setSessionTokenOrigin('stored');
-      setMode('validating');
+      const source = getTokenSource();
+      transitionTo.validating(stored, source === 'oauth' ? 'stored' : 'stored');
     } else {
-      setSessionTokenOrigin('prompt');
-      setMode('auth_method_selection');
+      transitionTo.authMethodSelection();
     }
   }, [inlineToken]);
 
   // Handle OAuth flow
   useEffect(() => {
-    if (mode !== 'oauth_flow') return;
-    
+    if (appState.mode !== 'oauth_flow') return;
+
     (async () => {
       try {
-        setOAuthStatus('initializing');
-        
+        updateOAuthFlow({ status: 'initializing' });
+
         // Small delay to ensure UI updates
         await new Promise(resolve => setTimeout(resolve, 500));
-        
-        setOAuthStatus('device_code_requested');
-        
+
+        updateOAuthFlow({ status: 'device_code_requested' });
+
         // Step 1: Get device code from GitHub (only once!)
         const deviceCodeResp = await requestDeviceCode();
-        setDeviceCodeResponse(deviceCodeResp);
-        
+
         // Set the device code for display
-        setOauthDeviceCode({
-          user_code: deviceCodeResp.user_code,
-          verification_uri: deviceCodeResp.verification_uri
+        updateOAuthFlow({
+          deviceCodeResponse: deviceCodeResp,
+          deviceCode: {
+            user_code: deviceCodeResp.user_code,
+            verification_uri: deviceCodeResp.verification_uri
+          }
         });
-        
+
         // Small delay to ensure UI updates
         await new Promise(resolve => setTimeout(resolve, 500));
-        
-        setOAuthStatus('browser_opening');
-        
+
+        updateOAuthFlow({ status: 'browser_opening' });
+
         // Step 2: Open browser with the verification URL
         const open = (await import('open')).default;
         await open(deviceCodeResp.verification_uri);
-        
-        setOAuthStatus('waiting_for_authorization');
-        
+
+        updateOAuthFlow({ status: 'waiting_for_authorization' });
+
         // Small delay to let user see the device code
         await new Promise(resolve => setTimeout(resolve, 2000));
-        
+
         // Step 3: Poll for access token using the SAME device code response
-        setOAuthStatus('polling_for_token');
+        updateOAuthFlow({ status: 'polling_for_token' });
         const tokenResult = await pollForAccessToken(deviceCodeResp);
-        
+
         if (tokenResult.success && tokenResult.token) {
-          setOAuthStatus('validating_token');
-          
+          updateOAuthFlow({ status: 'validating_token' });
+
           // Store the token
           storeToken(tokenResult.token, 'oauth');
-          setToken(tokenResult.token);
-          setTokenSource('oauth');
-          setSessionTokenOrigin('oauth');
-          
+
           if (tokenResult.login) {
-            setViewer(tokenResult.login);
-            setOAuthStatus('success');
-            
+            updateOAuthFlow({ status: 'success' });
+
             // Small delay to show success message
             await new Promise(resolve => setTimeout(resolve, 1000));
-            
-            setMode('ready');
+
+            transitionTo.ready(tokenResult.login, tokenResult.token, 'oauth', 'oauth');
           } else {
             throw new Error('Failed to get user login from token');
           }
@@ -131,42 +172,38 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
           throw new Error(tokenResult.error || 'Failed to obtain access token');
         }
       } catch (error: any) {
-        setOAuthStatus('error');
-        setError(error.message);
+        updateOAuthFlow({ status: 'error', error: error.message });
       }
     })();
-  }, [mode]);
+  }, [appState.mode]);
 
   // Handle authentication method selection
   const handleAuthMethodSelect = useCallback((method: AuthMethod) => {
     setAuthMethod(method);
     if (method === 'pat') {
-      setMode('prompt');
+      transitionTo.prompt();
     } else if (method === 'oauth') {
-      setMode('oauth_flow');
+      transitionTo.oauthFlow();
     }
   }, []);
 
+  // Validate token
   useEffect(() => {
+    if (appState.mode !== 'validating') return;
+
+    const { token, sessionTokenOrigin, wasRateLimited, rateLimitReset } = appState;
+
     (async () => {
-      if (mode !== 'validating' || !token) return;
-      
       // Add timeout for validation to prevent getting stuck
       const timeoutId = setTimeout(() => {
-        setError('Token validation timed out. Please check your network connection.');
-        setMode('auth_method_selection');
-        setToken(null);
+        transitionTo.authMethodSelection('Token validation timed out. Please check your network connection.');
       }, 15000); // 15 second timeout
-      
+
       try {
         const client = makeClient(token);
         const login = await getViewerLogin(client);
         clearTimeout(timeoutId);
-        setViewer(login);
-        
-        // On successful validation, clear any previous rate-limit context
-        setWasRateLimited(false);
-        setRateLimitReset(null);
+
         // Only persist if we haven't already stored a token, the token isn't inline-ephemeral,
         // and the token originated from an interactive prompt or OAuth flow.
         const hadStored = Boolean(getStoredToken());
@@ -177,19 +214,23 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
         if (shouldPersist) {
           storeToken(token);
         }
+
         logger.info('User authenticated successfully', {
           user: login,
           tokenOrigin: sessionTokenOrigin,
           willPersist: shouldPersist,
         });
-        setInput(''); // Clear the input after successful authentication
-        setMode('ready');
+
+        // Determine token source
+        const tokenSource: TokenSource = sessionTokenOrigin === 'oauth' ? 'oauth' : 'pat';
+
+        transitionTo.ready(login, token, tokenSource, sessionTokenOrigin);
       } catch (e: any) {
         clearTimeout(timeoutId);
         let errorMessage = 'Invalid or unauthorized token. Please enter a valid Personal Access Token.';
         let isRateLimit = false;
         let resetTime: string | null = null;
-        
+
         // Parse GitHub API error responses
         if (e.message) {
           const msg = e.message.toLowerCase();
@@ -210,7 +251,7 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
             errorMessage = 'Network error. Please check your internet connection and try again.';
           }
         }
-        
+
         // Check for GraphQL specific errors and rate limit info
         if (e.errors && Array.isArray(e.errors)) {
           const firstError = e.errors[0];
@@ -220,12 +261,12 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
             errorMessage = 'Token lacks required permissions. Please ensure your token has "repo" scope.';
           }
         }
-        
+
         // Check for rate limit headers in HTTP response
         if (e.response?.headers) {
           const rateLimitRemaining = e.response.headers['x-ratelimit-remaining'];
           const rateLimitReset = e.response.headers['x-ratelimit-reset'];
-          
+
           if (rateLimitRemaining === '0' || rateLimitRemaining === 0) {
             isRateLimit = true;
             if (rateLimitReset) {
@@ -235,117 +276,109 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
             }
           }
         }
-        
+
         if (isRateLimit) {
           // Keep token so Retry can revalidate; remember we came from rate-limit
-          setRateLimitReset(resetTime);
-          setWasRateLimited(true);
-          setMode('rate_limited');
+          transitionTo.rateLimited(resetTime, token, true);
         } else {
           // Invalid token or other error: clear token input and return to selection
-          setError(errorMessage);
-          setInput('');
-          setToken(null);
           // Only clear stored token if the failed token originated from storage
           if (sessionTokenOrigin === 'stored') {
             try { clearStoredToken(); } catch {}
           }
-          setMode('auth_method_selection');
+          transitionTo.authMethodSelection(errorMessage);
         }
       }
     })();
-  }, [mode, token]);
+  }, [appState.mode, appState.mode === 'validating' ? appState.token : null]);
 
   const onSubmitToken = useCallback(async () => {
-    if (!input.trim()) return;
-    setToken(input.trim());
-    setTokenSource('pat');
-    setSessionTokenOrigin('prompt');
-    setError(null);
-    setMode('validating');
-  }, [input]);
+    if (appState.mode !== 'prompt') return;
+    if (!appState.input.trim()) return;
+    transitionTo.validating(appState.input.trim(), 'prompt');
+  }, [appState]);
 
   // Handle logout from child components
   const handleLogout = useCallback(() => {
+    const previousUser = appState.mode === 'ready' ? appState.viewer : null;
+    const tokenOrigin = appState.mode === 'ready' ? appState.sessionTokenOrigin : null;
+
     logger.info('User logged out', {
-      previousUser: viewer,
-      tokenOrigin: sessionTokenOrigin,
+      previousUser,
+      tokenOrigin,
     });
     try { clearAllSettings(); } catch {}
-    setRateLimitReset(null);
-    setToken(null);
-    setViewer(null);
-    setInput(''); // Clear the token input field
-    setTokenSource('pat');
-    setMode('auth_method_selection');
-  }, [viewer, sessionTokenOrigin]);
+    transitionTo.authMethodSelection();
+  }, [appState]);
 
   // Handle keyboard input for different modes
-  useInput((input, key) => {
-    if ((mode === 'prompt' || mode === 'auth_method_selection') && key.escape) {
+  useInput((input: string, key: any) => {
+    if ((appState.mode === 'prompt' || appState.mode === 'auth_method_selection') && key.escape) {
       exit();
     }
-    
-    if (mode === 'oauth_flow' && key.escape) {
+
+    if (appState.mode === 'oauth_flow' && key.escape) {
       // Allow canceling OAuth flow at any time (during polling or on error)
-      setMode('auth_method_selection');
-      setError(null);
-      setOAuthStatus('initializing');
-      setOauthDeviceCode(null);
-      setDeviceCodeResponse(null);
+      transitionTo.authMethodSelection();
     }
-    
-    if (mode === 'rate_limited') {
+
+    if (appState.mode === 'rate_limited') {
       const ch = (input || '').toLowerCase();
       if (key.escape || ch === 'q') {
         exit();
       } else if (ch === 'r') {
         // Retry with current token
-        setMode('validating');
+        transitionTo.validating(appState.token, 'stored', appState.wasRateLimited, appState.resetAt);
       } else if (ch === 'l') {
         // Logout - go back to authentication
         handleLogout();
       }
     }
-    
-    if (mode === 'validating' && key.escape) {
+
+    if (appState.mode === 'validating' && key.escape) {
       // Cancel validation: return to rate-limited screen if relevant, else auth method selection
-      if (wasRateLimited || rateLimitReset) {
-        setMode('rate_limited');
+      if (appState.wasRateLimited || appState.rateLimitReset) {
+        transitionTo.rateLimited(appState.rateLimitReset, appState.token, appState.wasRateLimited);
       } else {
-        setMode('auth_method_selection');
+        transitionTo.authMethodSelection();
       }
-      setToken(null);
-      setInput('');
+    }
+
+    if (appState.mode === 'prompt') {
+      // Update input state when typing (handled by TextInput component, but track for state)
+      // Input is already part of appState, managed by TextInput's onChange
     }
   });
 
   // Calculate vertical padding as 15% of terminal height
   const verticalPadding = Math.floor(dims.rows * 0.05); // Reduced from 15% to 5% for 30% more container height
   
-  const header = useMemo(() => (
-    <Box flexDirection="row" justifyContent="space-between" marginBottom={1}>
-      <Box flexDirection="row" gap={1}>
-        <Text bold color="cyan">
-          {'  '}GitHub Repository Manager
-        </Text>
-        <Text color="gray" dimColor>v{packageJson.version}</Text>
-        {process.env.GH_MANAGER_DEBUG === '1' && (
-          <Text backgroundColor="blue" color="white"> debug mode </Text>
+  const header = useMemo(() => {
+    const viewer = appState.mode === 'ready' ? appState.viewer : null;
+    return (
+      <Box flexDirection="row" justifyContent="space-between" marginBottom={1}>
+        <Box flexDirection="row" gap={1}>
+          <Text bold color="cyan">
+            {'  '}GitHub Repository Manager
+          </Text>
+          <Text color="gray" dimColor>v{packageJson.version}</Text>
+          {process.env.GH_MANAGER_DEBUG === '1' && (
+            <Text backgroundColor="blue" color="white"> debug mode </Text>
+          )}
+        </Box>
+        {viewer && (
+          <Text color="gray">
+            {orgContext !== 'personal' && orgContext.login ?
+              `${orgContext.login}/@${viewer}  ` :
+              `@${viewer}  `
+            }
+          </Text>
         )}
       </Box>
-      {viewer && (
-        <Text color="gray">
-          {orgContext !== 'personal' && orgContext.login ? 
-            `${orgContext.login}/@${viewer}  ` : 
-            `@${viewer}  `
-          }
-        </Text>
-      )}
-    </Box>
-  ), [viewer, orgContext]);
+    );
+  }, [appState, orgContext]);
 
-  if (mode === 'rate_limited') {
+  if (appState.mode === 'rate_limited') {
     const formatResetTime = (resetTime: string | null) => {
       if (!resetTime) return 'Unknown';
       try {
@@ -353,7 +386,7 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
         const now = new Date();
         const diffMs = resetDate.getTime() - now.getTime();
         const diffMinutes = Math.ceil(diffMs / (1000 * 60));
-        
+
         if (diffMinutes <= 0) {
           return 'Now (should be reset)';
         } else if (diffMinutes < 60) {
@@ -380,14 +413,14 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
             <Text color="gray" marginBottom={1}>
               This happens when you make too many requests in a short time.
             </Text>
-            
-            {rateLimitReset && (
+
+            {appState.resetAt && (
               <Box marginTop={1} marginBottom={1}>
                 <Text>
-                  <Text color="cyan">Reset in:</Text> <Text bold>{formatResetTime(rateLimitReset)}</Text>
+                  <Text color="cyan">Reset in:</Text> <Text bold>{formatResetTime(appState.resetAt)}</Text>
                 </Text>
                 <Text color="gray" dimColor>
-                  ({new Date(rateLimitReset).toLocaleTimeString()})
+                  ({new Date(appState.resetAt).toLocaleTimeString()})
                 </Text>
               </Box>
             )}
@@ -395,12 +428,12 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
             <Box marginTop={2} flexDirection="column" gap={1}>
               <Text bold>What would you like to do?</Text>
               <Box flexDirection="column" paddingLeft={2}>
-                <Text><Text color="cyan" bold>R</Text> - Retry now {rateLimitReset && formatResetTime(rateLimitReset) !== 'Now (should be reset)' ? '(likely to fail until reset)' : '(should work now)'}</Text>
+                <Text><Text color="cyan" bold>R</Text> - Retry now {appState.resetAt && formatResetTime(appState.resetAt) !== 'Now (should be reset)' ? '(likely to fail until reset)' : '(should work now)'}</Text>
                 <Text><Text color="cyan" bold>L</Text> - Logout and choose authentication method</Text>
                 <Text><Text color="gray" bold>Q/Esc</Text> - Quit application</Text>
               </Box>
             </Box>
-            
+
             <Text color="gray" dimColor marginTop={2}>
               Tip: Using multiple tokens or waiting between requests can help avoid rate limits.
             </Text>
@@ -410,15 +443,15 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
     );
   }
 
-  if (mode === 'auth_method_selection') {
+  if (appState.mode === 'auth_method_selection') {
     return (
       <Box flexDirection="column" height={dims.rows} paddingX={2} paddingTop={verticalPadding} paddingBottom={verticalPadding}>
         {header}
         <Box flexGrow={1} justifyContent="center" alignItems="center">
           <Box flexDirection="column" alignItems="center">
             <AuthMethodSelector onSelect={handleAuthMethodSelect} />
-            {error && (
-              <Text color="red" marginTop={1}>{error}</Text>
+            {appState.error && (
+              <Text color="red" marginTop={1}>{appState.error}</Text>
             )}
           </Box>
         </Box>
@@ -426,18 +459,18 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
     );
   }
 
-  if (mode === 'oauth_flow') {
+  if (appState.mode === 'oauth_flow') {
     return (
       <Box flexDirection="column" height={dims.rows} paddingX={2} paddingTop={verticalPadding} paddingBottom={verticalPadding}>
         {header}
         <Box flexGrow={1} justifyContent="center" alignItems="center">
-          <OAuthProgress status={oauthStatus} error={error || undefined} deviceCode={oauthDeviceCode || undefined} />
+          <OAuthProgress status={appState.status} error={appState.error} deviceCode={appState.deviceCode || undefined} />
         </Box>
       </Box>
     );
   }
 
-  if (mode === 'prompt') {
+  if (appState.mode === 'prompt') {
     return (
       <Box flexDirection="column" height={dims.rows} paddingX={2} paddingTop={verticalPadding} paddingBottom={verticalPadding}>
         {header}
@@ -450,14 +483,14 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
             <Box>
               <Text>Token: </Text>
               <TextInput
-                value={input}
-                onChange={setInput}
+                value={appState.input}
+                onChange={(value: string) => updatePrompt({ input: value })}
                 onSubmit={onSubmitToken}
                 mask="*"
               />
             </Box>
-            {error && (
-              <Text color="red" marginTop={1}>{error}</Text>
+            {appState.error && (
+              <Text color="red" marginTop={1}>{appState.error}</Text>
             )}
             <Text color="gray" dimColor marginTop={1}>
               The token will be stored securely in your local config
@@ -471,14 +504,14 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
     );
   }
 
-  if (mode === 'validating' || mode === 'checking') {
+  if (appState.mode === 'validating' || appState.mode === 'checking') {
     return (
       <Box flexDirection="column" height={dims.rows} paddingX={2} paddingTop={verticalPadding} paddingBottom={verticalPadding}>
         {header}
         <Box flexGrow={1} justifyContent="center" alignItems="center">
           <Box flexDirection="column" alignItems="center">
             <Text color="yellow">Validating token...</Text>
-            {mode === 'validating' && (
+            {appState.mode === 'validating' && (
               <Text color="gray" dimColor marginTop={1}>
                 Press Esc to cancel
               </Text>
@@ -489,29 +522,36 @@ export default function App({ initialOrgSlug, inlineToken, inlineTokenEphemeral 
     );
   }
 
-  if (mode === 'error') {
+  if (appState.mode === 'error') {
     return (
       <Box flexDirection="column" height={dims.rows} paddingX={2} paddingTop={verticalPadding} paddingBottom={verticalPadding}>
         {header}
         <Box flexGrow={1} justifyContent="center" alignItems="center">
-          <Text color="red">{error ?? 'Unexpected error'}</Text>
+          <Text color="red">{appState.error}</Text>
         </Box>
       </Box>
     );
   }
 
-  // ready
-  return (
-    <Box flexDirection="column" height={dims.rows} paddingX={2} paddingTop={verticalPadding} paddingBottom={verticalPadding}>
-      {header}
-      <RepoList
-        token={token as string}
-        maxVisibleRows={dims.rows - (verticalPadding * 2) - 4}
-        onLogout={handleLogout}
-        viewerLogin={viewer ?? undefined}
-        onOrgContextChange={setOrgContext}
-        initialOrgSlug={initialOrgSlug}
-      />
-    </Box>
-  );
+  // ready state - TypeScript knows appState.mode === 'ready' here
+  if (appState.mode === 'ready') {
+    return (
+      <Box flexDirection="column" height={dims.rows} paddingX={2} paddingTop={verticalPadding} paddingBottom={verticalPadding}>
+        {header}
+        <ErrorBoundary>
+          <RepoList
+            token={appState.token}
+            maxVisibleRows={dims.rows - (verticalPadding * 2) - 4}
+            onLogout={handleLogout}
+            viewerLogin={appState.viewer}
+            onOrgContextChange={setOrgContext}
+            initialOrgSlug={initialOrgSlug}
+          />
+        </ErrorBoundary>
+      </Box>
+    );
+  }
+
+  // Exhaustive check: should never reach here
+  return null;
 }

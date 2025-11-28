@@ -6,7 +6,7 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['tests/**/*.{test,spec}.{ts,tsx}'],
+    include: ['tests/**/*.{test,spec}.{ts,tsx}', 'src/**/*.{test,spec}.{ts,tsx}'],
     globals: false,
     pool: 'forks',
     // Run tests in a single thread to avoid worker pool issues in constrained environments

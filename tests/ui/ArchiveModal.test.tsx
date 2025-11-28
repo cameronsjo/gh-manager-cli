@@ -307,6 +307,9 @@ describe('ArchiveModal', () => {
     // Trigger archive
     inputCallback('y', {});
 
+    // Wait for React state update to take effect
+    await new Promise(resolve => setTimeout(resolve, 10));
+
     // Try to cancel while archiving - should be ignored by component logic
     inputCallback('c', {});
     inputCallback('', { escape: true });

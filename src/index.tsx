@@ -6,6 +6,7 @@ import pkg from '../package.json';
 import 'dotenv/config';
 import App from './ui/App';
 import { logger } from './lib/logger';
+import { ErrorBoundary } from './ui/components/ErrorBoundary';
 
 // Basic CLI flags (handled before rendering Ink)
 const argv = process.argv.slice(2);
@@ -145,8 +146,10 @@ const inlineToken = (() => {
 
 logger.debug('Rendering UI');
 const { unmount } = render(
-  <Box flexDirection="column">
-    <App initialOrgSlug={initialOrgSlug} inlineToken={inlineToken} inlineTokenEphemeral={Boolean(inlineToken)} />
-    <Text color="gray"></Text>
-  </Box>
+  <ErrorBoundary>
+    <Box flexDirection="column">
+      <App initialOrgSlug={initialOrgSlug} inlineToken={inlineToken} inlineTokenEphemeral={Boolean(inlineToken)} />
+      <Text color="gray"></Text>
+    </Box>
+  </ErrorBoundary>
 );

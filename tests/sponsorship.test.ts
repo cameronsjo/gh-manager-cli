@@ -47,11 +47,11 @@ describe('GitHub Sponsorship Configuration', () => {
 
   it('should have comprehensive sponsorship documentation', () => {
     expect(existsSync(sponsorshipDocsPath)).toBe(true);
-    
+
     const content = readFileSync(sponsorshipDocsPath, 'utf8');
-    expect(content).toContain('GitHub Sponsorship Platforms Guide');
-    expect(content).toContain('Ko-fi (Buy Me Coffee Alternative)');
-    expect(content).toContain('Custom URLs (Including Buy Me a Coffee)');
+    expect(content).toContain('GitHub Sponsorship Configuration Guide');
+    expect(content).toContain('Buy Me a Coffee');
+    expect(content).toContain('buymeacoffee.com/wiiiimm');
   });
 
   it('should have proper YAML structure', () => {
@@ -74,11 +74,10 @@ describe('GitHub Sponsorship Configuration', () => {
   it('should reference sponsorship documentation in README', () => {
     const readmePath = join(process.cwd(), 'README.md');
     const content = readFileSync(readmePath, 'utf8');
-    
+
     expect(content).toContain('Support & Sponsorship');
     expect(content).toContain('GitHub Sponsors');
-    expect(content).toContain('Ko-fi');
     expect(content).toContain('Buy Me a Coffee');
-    expect(content).toContain('SPONSORSHIP_PLATFORMS.md');
+    expect(content).toContain('buymeacoffee.com/wiiiimm');
   });
 });

@@ -2,6 +2,23 @@ import { logger } from '../../lib/logger';
 import { makeClient } from './client';
 import { GET_REPO_DETAILS_QUERY } from './queries';
 
+/**
+ * Archives a repository by its GitHub node ID
+ *
+ * Archived repositories are read-only. Users can view and fork the repository,
+ * but cannot push to it or open new issues/pull requests.
+ *
+ * @param client - GitHub GraphQL client instance created by makeClient
+ * @param repositoryId - GitHub node ID of the repository (format: "R_...")
+ * @returns Promise that resolves when the repository is archived
+ * @throws {Error} If the mutation fails or user lacks permissions
+ * @example
+ * ```typescript
+ * const client = makeClient(token);
+ * await archiveRepositoryById(client, 'R_kgDOAbCdEf');
+ * console.log('Repository archived successfully');
+ * ```
+ */
 export async function archiveRepositoryById(
   client: ReturnType<typeof makeClient>,
   repositoryId: string
@@ -33,6 +50,22 @@ export async function archiveRepositoryById(
   }
 }
 
+/**
+ * Unarchives a previously archived repository by its GitHub node ID
+ *
+ * Restores full repository functionality, allowing pushes, issues, and pull requests.
+ *
+ * @param client - GitHub GraphQL client instance created by makeClient
+ * @param repositoryId - GitHub node ID of the repository (format: "R_...")
+ * @returns Promise that resolves when the repository is unarchived
+ * @throws {Error} If the mutation fails or user lacks permissions
+ * @example
+ * ```typescript
+ * const client = makeClient(token);
+ * await unarchiveRepositoryById(client, 'R_kgDOAbCdEf');
+ * console.log('Repository unarchived successfully');
+ * ```
+ */
 export async function unarchiveRepositoryById(
   client: ReturnType<typeof makeClient>,
   repositoryId: string
@@ -64,6 +97,30 @@ export async function unarchiveRepositoryById(
   }
 }
 
+/**
+ * Changes repository visibility (public, private, or internal)
+ *
+ * Uses GitHub REST API as GraphQL doesn't support visibility changes.
+ * INTERNAL visibility is only available for repositories in GitHub Enterprise organizations.
+ *
+ * @param client - GitHub GraphQL client instance created by makeClient
+ * @param repositoryId - GitHub node ID of the repository (format: "R_...")
+ * @param visibility - Target visibility: PUBLIC, PRIVATE, or INTERNAL
+ * @param token - GitHub personal access token (required for REST API call)
+ * @returns Promise resolving to object containing the repository's nameWithOwner
+ * @throws {Error} If repository not found, user lacks permissions, or API request fails
+ * @example
+ * ```typescript
+ * const client = makeClient(token);
+ * const result = await changeRepositoryVisibility(
+ *   client,
+ *   'R_kgDOAbCdEf',
+ *   'PRIVATE',
+ *   token
+ * );
+ * console.log(`Changed visibility for ${result.nameWithOwner}`);
+ * ```
+ */
 export async function changeRepositoryVisibility(
   client: ReturnType<typeof makeClient>,
   repositoryId: string,
@@ -118,6 +175,24 @@ export async function changeRepositoryVisibility(
   return { nameWithOwner: repo.nameWithOwner };
 }
 
+/**
+ * Renames a repository by its GitHub node ID
+ *
+ * Changes the repository name while preserving the owner. GitHub automatically
+ * sets up redirects from the old name to the new name.
+ *
+ * @param client - GitHub GraphQL client instance created by makeClient
+ * @param repositoryId - GitHub node ID of the repository (format: "R_...")
+ * @param newName - New repository name (without owner prefix)
+ * @returns Promise that resolves when the repository is renamed
+ * @throws {Error} If the mutation fails, name is taken, or user lacks permissions
+ * @example
+ * ```typescript
+ * const client = makeClient(token);
+ * await renameRepositoryById(client, 'R_kgDOAbCdEf', 'my-new-repo-name');
+ * console.log('Repository renamed successfully');
+ * ```
+ */
 export async function renameRepositoryById(
   client: ReturnType<typeof makeClient>,
   repositoryId: string,
@@ -157,7 +232,23 @@ export async function renameRepositoryById(
   }
 }
 
-// Star a repository
+/**
+ * Stars a repository
+ *
+ * Adds the repository to the authenticated user's starred repositories list.
+ * Stars are used to show appreciation and bookmark repositories.
+ *
+ * @param client - GitHub GraphQL client instance created by makeClient
+ * @param starrableId - GitHub node ID of the repository (format: "R_...")
+ * @returns Promise that resolves when the repository is starred
+ * @throws {Error} If the mutation fails or repository not found
+ * @example
+ * ```typescript
+ * const client = makeClient(token);
+ * await starRepository(client, 'R_kgDOAbCdEf');
+ * console.log('Repository starred successfully');
+ * ```
+ */
 export async function starRepository(
   client: ReturnType<typeof makeClient>,
   starrableId: string
@@ -189,7 +280,22 @@ export async function starRepository(
   }
 }
 
-// Unstar a repository
+/**
+ * Unstars a repository
+ *
+ * Removes the repository from the authenticated user's starred repositories list.
+ *
+ * @param client - GitHub GraphQL client instance created by makeClient
+ * @param starrableId - GitHub node ID of the repository (format: "R_...")
+ * @returns Promise that resolves when the repository is unstarred
+ * @throws {Error} If the mutation fails or repository not found
+ * @example
+ * ```typescript
+ * const client = makeClient(token);
+ * await unstarRepository(client, 'R_kgDOAbCdEf');
+ * console.log('Repository unstarred successfully');
+ * ```
+ */
 export async function unstarRepository(
   client: ReturnType<typeof makeClient>,
   starrableId: string

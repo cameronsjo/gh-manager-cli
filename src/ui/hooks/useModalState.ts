@@ -2,7 +2,29 @@ import { useState, useCallback } from 'react';
 
 /**
  * Generic modal state management hook
- * Manages open/closed state, target data, loading state, and error messages
+ *
+ * Manages complete modal lifecycle including open/closed state, target data,
+ * loading indicators, and error messages. Provides clean separation of concerns
+ * for modal dialogs in the TUI.
+ *
+ * @template T - Type of the modal target data (e.g., RepoNode, Organization)
+ * @returns Object containing modal state and control functions
+ * @example
+ * ```typescript
+ * const deleteModal = useModalState<RepoNode>();
+ *
+ * // Open modal with target
+ * deleteModal.open(selectedRepo);
+ *
+ * // Show loading state during async operation
+ * deleteModal.setLoading(true);
+ *
+ * // Handle errors
+ * deleteModal.setError('Failed to delete repository');
+ *
+ * // Close modal and reset all state
+ * deleteModal.close();
+ * ```
  */
 export function useModalState<T = null>() {
   const [isOpen, setIsOpen] = useState(false);

@@ -7,6 +7,17 @@ import envPaths from 'env-paths';
 import { logger } from '../../lib/logger';
 import { APOLLO_CACHE_MAX_SIZE } from '../../config/constants';
 
+/**
+ * Creates an Octokit GraphQL client instance
+ *
+ * @param token - GitHub personal access token or OAuth token
+ * @returns Configured Octokit GraphQL client with authentication
+ * @example
+ * ```typescript
+ * const client = makeClient(process.env.GITHUB_TOKEN);
+ * const result = await client(query, variables);
+ * ```
+ */
 export function makeClient(token: string) {
   return makeGraphQL.defaults({
     headers: { authorization: `token ${token}` },
@@ -56,7 +67,25 @@ const storage = {
   }
 };
 
-// Apollo Client with persisted cache (default for all queries)
+/**
+ * Creates or returns existing Apollo Client instance with persisted cache
+ *
+ * This function maintains a singleton Apollo Client instance with file-based cache persistence.
+ * The cache is stored in the user's data directory and persists across application restarts.
+ *
+ * @param token - GitHub personal access token or OAuth token
+ * @returns Promise resolving to Apollo Client instance with gql template tag
+ * @throws {Error} If Fetch API is not available (requires Node 18+)
+ * @throws {Error} If Apollo Client initialization fails
+ * @example
+ * ```typescript
+ * const apollo = await makeApolloClient(token);
+ * const result = await apollo.client.query({
+ *   query: apollo.gql`query { viewer { login } }`,
+ *   fetchPolicy: 'cache-first'
+ * });
+ * ```
+ */
 export async function makeApolloClient(token: string): Promise<any> {
   // Return existing instance if available
   if (apolloClientInstance) {
@@ -99,7 +128,19 @@ export async function makeApolloClient(token: string): Promise<any> {
   }
 }
 
-// Purge persisted Apollo cache files (and TTL meta)
+/**
+ * Purges persisted Apollo cache files from disk
+ *
+ * Removes both the cache data file and cache metadata file from the user's data directory.
+ * Useful for clearing stale cache or troubleshooting cache-related issues.
+ *
+ * @returns Promise that resolves when cache files are purged
+ * @example
+ * ```typescript
+ * await purgeApolloCacheFiles();
+ * console.log('Cache cleared');
+ * ```
+ */
 export async function purgeApolloCacheFiles(): Promise<void> {
   try {
     const fs = await import('fs');
@@ -128,7 +169,19 @@ export async function purgeApolloCacheFiles(): Promise<void> {
   }
 }
 
-// Debug function to inspect cache status - using stderr to bypass Ink UI
+/**
+ * Inspects and displays Apollo cache status information
+ *
+ * Outputs cache statistics to stderr including file sizes, modification times,
+ * and recent cache entries. Bypasses Ink UI by writing directly to stderr.
+ *
+ * @returns Promise that resolves when inspection is complete
+ * @example
+ * ```typescript
+ * await inspectCacheStatus();
+ * // Outputs cache information to stderr
+ * ```
+ */
 export async function inspectCacheStatus(): Promise<void> {
   try {
     const fs = await import('fs');

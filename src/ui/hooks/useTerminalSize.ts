@@ -3,7 +3,25 @@ import { useStdout } from 'ink';
 
 /**
  * Terminal resize handling hook
- * Tracks terminal dimensions (columns and rows) and updates on resize events
+ *
+ * Tracks terminal dimensions and automatically updates when the terminal is resized.
+ * Provides reactive terminal size information for responsive TUI layouts.
+ *
+ * @returns Object containing current terminal dimensions
+ * @property {number} cols - Number of columns (width) in the terminal
+ * @property {number} rows - Number of rows (height) in the terminal
+ * @example
+ * ```typescript
+ * function MyComponent() {
+ *   const { cols, rows } = useTerminalSize();
+ *
+ *   return (
+ *     <Box>
+ *       Terminal size: {cols}x{rows}
+ *     </Box>
+ *   );
+ * }
+ * ```
  */
 export function useTerminalSize() {
   const { stdout } = useStdout();

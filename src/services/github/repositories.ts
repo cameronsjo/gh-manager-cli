@@ -12,6 +12,9 @@ import {
   GET_REPOSITORY_BY_ID_QUERY
 } from './queries';
 
+/**
+ * Represents a GitHub organization
+ */
 export interface Organization {
   id: string;
   login: string;
@@ -20,6 +23,9 @@ export interface Organization {
   isEnterprise?: boolean;
 }
 
+/**
+ * Result of a paginated repository query
+ */
 export interface ReposPageResult {
   nodes: RepoNode[];
   endCursor: string | null;
@@ -28,8 +34,24 @@ export interface ReposPageResult {
   rateLimit?: RateLimitInfo;
 }
 
+/**
+ * Types of repository ownership affiliation for filtering
+ */
 export type OwnerAffiliation = 'OWNER' | 'COLLABORATOR' | 'ORGANIZATION_MEMBER';
 
+/**
+ * Fetches the authenticated user's GitHub login username
+ *
+ * @param client - GitHub GraphQL client instance created by makeClient
+ * @returns Promise resolving to the viewer's login username
+ * @throws {Error} If authentication fails or API request fails
+ * @example
+ * ```typescript
+ * const client = makeClient(token);
+ * const login = await getViewerLogin(client);
+ * console.log(`Logged in as: ${login}`);
+ * ```
+ */
 export async function getViewerLogin(
   client: ReturnType<typeof makeClient>
 ): Promise<string> {
@@ -44,6 +66,19 @@ export async function getViewerLogin(
   }
 }
 
+/**
+ * Fetches all organizations the authenticated user belongs to
+ *
+ * @param client - GitHub GraphQL client instance created by makeClient
+ * @returns Promise resolving to array of organizations
+ * @throws {Error} If API request fails
+ * @example
+ * ```typescript
+ * const client = makeClient(token);
+ * const orgs = await fetchViewerOrganizations(client);
+ * orgs.forEach(org => console.log(org.login));
+ * ```
+ */
 export async function fetchViewerOrganizations(
   client: ReturnType<typeof makeClient>
 ): Promise<Organization[]> {
@@ -51,7 +86,22 @@ export async function fetchViewerOrganizations(
   return res.viewer.organizations.nodes as Organization[];
 }
 
-// Check if an organization is enterprise by checking enterpriseOwners field
+/**
+ * Checks if an organization is part of a GitHub Enterprise
+ *
+ * Determines enterprise status by checking for the presence of enterprise owners.
+ * Returns false if the query fails or the organization is not enterprise.
+ *
+ * @param client - GitHub GraphQL client instance created by makeClient
+ * @param orgLogin - Organization login name to check
+ * @returns Promise resolving to true if organization is enterprise, false otherwise
+ * @example
+ * ```typescript
+ * const client = makeClient(token);
+ * const isEnterprise = await checkOrganizationIsEnterprise(client, 'my-org');
+ * console.log(`Enterprise: ${isEnterprise}`);
+ * ```
+ */
 export async function checkOrganizationIsEnterprise(
   client: ReturnType<typeof makeClient>,
   orgLogin: string
@@ -81,6 +131,34 @@ export async function checkOrganizationIsEnterprise(
   }
 }
 
+/**
+ * Fetches a page of repositories using Octokit GraphQL client
+ *
+ * Supports both personal and organization repository queries with flexible filtering
+ * and sorting options. Can optionally include fork tracking information.
+ *
+ * @param client - GitHub GraphQL client instance created by makeClient
+ * @param first - Number of repositories to fetch per page
+ * @param after - Cursor for pagination (from previous query's endCursor)
+ * @param orderBy - Sort configuration with field and direction
+ * @param includeForkTracking - Whether to include detailed fork commit tracking data
+ * @param ownerAffiliations - Filter by repository affiliation types
+ * @param organizationLogin - Optional organization login for org-specific queries
+ * @param privacy - Filter by repository visibility (PUBLIC or PRIVATE)
+ * @returns Promise resolving to paginated repository results
+ * @throws {Error} If API request fails
+ * @example
+ * ```typescript
+ * const client = makeClient(token);
+ * const result = await fetchViewerReposPage(
+ *   client,
+ *   15,
+ *   null,
+ *   { field: 'UPDATED_AT', direction: 'DESC' }
+ * );
+ * console.log(`Fetched ${result.nodes.length} repositories`);
+ * ```
+ */
 export async function fetchViewerReposPage(
   client: ReturnType<typeof makeClient>,
   first: number,
@@ -320,7 +398,37 @@ export async function fetchViewerReposPage(
   }
 }
 
-// Unified entry point - Apollo Client is the default with Octokit fallback
+/**
+ * Unified entry point for fetching repositories with automatic client selection
+ *
+ * Attempts to use Apollo Client with caching first, falling back to Octokit if Apollo fails.
+ * This is the recommended function for fetching repositories as it provides caching and
+ * performance benefits.
+ *
+ * @param token - GitHub personal access token or OAuth token
+ * @param first - Number of repositories to fetch per page
+ * @param after - Cursor for pagination (from previous query's endCursor)
+ * @param orderBy - Sort configuration with field and direction
+ * @param includeForkTracking - Whether to include detailed fork commit tracking data
+ * @param fetchPolicy - Apollo cache policy: 'cache-first' or 'network-only'
+ * @param ownerAffiliations - Filter by repository affiliation types
+ * @param organizationLogin - Optional organization login for org-specific queries
+ * @param privacy - Filter by repository visibility (PUBLIC or PRIVATE)
+ * @returns Promise resolving to paginated repository results with rate limit info
+ * @throws {Error} If both Apollo and Octokit clients fail
+ * @example
+ * ```typescript
+ * const result = await fetchViewerReposPageUnified(
+ *   token,
+ *   15,
+ *   null,
+ *   { field: 'UPDATED_AT', direction: 'DESC' },
+ *   true,
+ *   'cache-first'
+ * );
+ * console.log(`Fetched ${result.nodes.length} of ${result.totalCount} repos`);
+ * ```
+ */
 export async function fetchViewerReposPageUnified(
   token: string,
   first: number,
@@ -494,7 +602,42 @@ export async function fetchViewerReposPageUnified(
   return fetchViewerReposPage(octo, first, after, orderBy, includeForkTracking, ownerAffiliations, organizationLogin, privacy);
 }
 
-// Server-side search repositories for the viewer (Apollo-first, network-only by default)
+/**
+ * Searches repositories using GitHub's search API with Apollo Client
+ *
+ * Performs server-side search across repository names and descriptions. Supports both
+ * personal and organization contexts. Uses network-only fetch policy by default for
+ * up-to-date search results.
+ *
+ * @param token - GitHub personal access token or OAuth token
+ * @param viewer - Authenticated user's login name
+ * @param text - Search query text to match against repo names and descriptions
+ * @param first - Number of repositories to fetch per page
+ * @param after - Cursor for pagination (from previous query's endCursor)
+ * @param sortKey - Sort field (not used by GitHub Search API but kept for compatibility)
+ * @param sortDir - Sort direction (not used by GitHub Search API but kept for compatibility)
+ * @param includeForkTracking - Whether to include detailed fork commit tracking data
+ * @param fetchPolicy - Apollo cache policy: 'network-only' or 'cache-first'
+ * @param organizationLogin - Optional organization login to scope search to org repos
+ * @returns Promise resolving to paginated search results with rate limit info
+ * @throws {Error} If search query fails or Apollo Client encounters an error
+ * @example
+ * ```typescript
+ * const results = await searchRepositoriesUnified(
+ *   token,
+ *   'octocat',
+ *   'machine learning',
+ *   15,
+ *   null,
+ *   'UPDATED_AT',
+ *   'DESC',
+ *   true,
+ *   'network-only',
+ *   'my-org'
+ * );
+ * console.log(`Found ${results.totalCount} repositories`);
+ * ```
+ */
 export async function searchRepositoriesUnified(
   token: string,
   viewer: string,
@@ -580,7 +723,22 @@ export async function searchRepositoriesUnified(
   }
 }
 
-// Fetch starred repositories
+/**
+ * Fetches repositories starred by the authenticated user
+ *
+ * @param client - GitHub GraphQL client instance created by makeClient
+ * @param first - Number of starred repositories to fetch per page
+ * @param after - Cursor for pagination (from previous query's endCursor)
+ * @returns Promise resolving to paginated starred repository results
+ * @throws {Error} If API request fails
+ * @example
+ * ```typescript
+ * const client = makeClient(token);
+ * const starred = await getStarredRepositories(client, 20);
+ * console.log(`You have starred ${starred.totalCount} repositories`);
+ * starred.nodes.forEach(repo => console.log(repo.nameWithOwner));
+ * ```
+ */
 export async function getStarredRepositories(
   client: ReturnType<typeof makeClient>,
   first: number,
@@ -626,6 +784,21 @@ export async function getStarredRepositories(
   }
 }
 
+/**
+ * Fetches a single repository by its GitHub node ID
+ *
+ * @param client - GitHub GraphQL client instance created by makeClient
+ * @param repositoryId - GitHub node ID of the repository (format: "R_...")
+ * @param includeForkTracking - Whether to include detailed fork commit tracking data
+ * @returns Promise resolving to repository data or null if not found
+ * @throws {Error} If API request fails
+ * @example
+ * ```typescript
+ * const client = makeClient(token);
+ * const repo = await fetchRepositoryById(client, 'R_kgDOAbCdEf', true);
+ * if (repo) console.log(repo.nameWithOwner);
+ * ```
+ */
 export async function fetchRepositoryById(
   client: ReturnType<typeof makeClient>,
   repositoryId: string,
@@ -639,7 +812,26 @@ export async function fetchRepositoryById(
   return result.node;
 }
 
-// Try to get repository from cache first
+/**
+ * Attempts to retrieve repository data from Apollo cache
+ *
+ * Reads repository fragment from Apollo Client's normalized cache without making
+ * a network request. Returns null if repository is not in cache or Apollo Client
+ * is not available.
+ *
+ * @param token - GitHub personal access token or OAuth token
+ * @param repositoryId - GitHub node ID of the repository (format: "R_...")
+ * @returns Promise resolving to cached repository data or null if not cached
+ * @example
+ * ```typescript
+ * const cached = await getRepositoryFromCache(token, 'R_kgDOAbCdEf');
+ * if (cached) {
+ *   console.log('Using cached data:', cached.nameWithOwner);
+ * } else {
+ *   console.log('Not in cache, need to fetch');
+ * }
+ * ```
+ */
 export async function getRepositoryFromCache(token: string, repositoryId: string): Promise<RepoNode | null> {
   try {
     const ap = await makeApolloClient(token);

@@ -2,7 +2,21 @@ import type { RepoNode } from '../../types';
 import { logger } from '../../lib/logger';
 import { makeApolloClient } from './client';
 
-// Cache update functions
+/**
+ * Updates Apollo cache after repository deletion
+ *
+ * Evicts the deleted repository from the cache and runs garbage collection
+ * to remove any dangling references. Fails silently if Apollo Client is unavailable.
+ *
+ * @param token - GitHub personal access token or OAuth token
+ * @param repositoryId - GitHub node ID of the deleted repository (format: "R_...")
+ * @returns Promise that resolves when cache is updated
+ * @example
+ * ```typescript
+ * await deleteRepositoryRest(token, owner, repo);
+ * await updateCacheAfterDelete(token, repositoryId);
+ * ```
+ */
 export async function updateCacheAfterDelete(token: string, repositoryId: string): Promise<void> {
   try {
     const ap = await makeApolloClient(token);
@@ -16,6 +30,22 @@ export async function updateCacheAfterDelete(token: string, repositoryId: string
   }
 }
 
+/**
+ * Updates Apollo cache after repository archive/unarchive operation
+ *
+ * Modifies the isArchived field in the cached repository data without refetching.
+ * Fails silently if Apollo Client is unavailable.
+ *
+ * @param token - GitHub personal access token or OAuth token
+ * @param repositoryId - GitHub node ID of the repository (format: "R_...")
+ * @param isArchived - New archived status (true for archived, false for unarchived)
+ * @returns Promise that resolves when cache is updated
+ * @example
+ * ```typescript
+ * await archiveRepositoryById(client, repositoryId);
+ * await updateCacheAfterArchive(token, repositoryId, true);
+ * ```
+ */
 export async function updateCacheAfterArchive(token: string, repositoryId: string, isArchived: boolean): Promise<void> {
   try {
     const ap = await makeApolloClient(token);
@@ -33,6 +63,23 @@ export async function updateCacheAfterArchive(token: string, repositoryId: strin
   }
 }
 
+/**
+ * Updates Apollo cache after repository visibility change
+ *
+ * Modifies both visibility and isPrivate fields in the cached repository data.
+ * Note that INTERNAL repositories are not considered private in the traditional sense.
+ * Fails silently if Apollo Client is unavailable.
+ *
+ * @param token - GitHub personal access token or OAuth token
+ * @param repositoryId - GitHub node ID of the repository (format: "R_...")
+ * @param visibility - New visibility setting (PUBLIC, PRIVATE, or INTERNAL)
+ * @returns Promise that resolves when cache is updated
+ * @example
+ * ```typescript
+ * await changeRepositoryVisibility(client, repositoryId, 'PRIVATE', token);
+ * await updateCacheAfterVisibilityChange(token, repositoryId, 'PRIVATE');
+ * ```
+ */
 export async function updateCacheAfterVisibilityChange(token: string, repositoryId: string, visibility: 'PUBLIC' | 'PRIVATE' | 'INTERNAL'): Promise<void> {
   logger.info('Updating cache after repository visibility change', {
     repositoryId,
@@ -58,6 +105,23 @@ export async function updateCacheAfterVisibilityChange(token: string, repository
   }
 }
 
+/**
+ * Updates Apollo cache after repository rename operation
+ *
+ * Modifies both name and nameWithOwner fields in the cached repository data.
+ * Fails silently if Apollo Client is unavailable.
+ *
+ * @param token - GitHub personal access token or OAuth token
+ * @param repositoryId - GitHub node ID of the repository (format: "R_...")
+ * @param newName - New repository name (without owner prefix)
+ * @param nameWithOwner - New full repository name (format: "owner/repo")
+ * @returns Promise that resolves when cache is updated
+ * @example
+ * ```typescript
+ * await renameRepositoryById(client, repositoryId, 'new-name');
+ * await updateCacheAfterRename(token, repositoryId, 'new-name', 'owner/new-name');
+ * ```
+ */
 export async function updateCacheAfterRename(
   token: string,
   repositoryId: string,
@@ -81,6 +145,23 @@ export async function updateCacheAfterRename(
   }
 }
 
+/**
+ * Writes or updates a complete repository object in Apollo cache
+ *
+ * Writes a full repository fragment to the cache, useful for updating cache
+ * after fetching fresh data from the API. Fails silently if Apollo Client is unavailable.
+ *
+ * @param token - GitHub personal access token or OAuth token
+ * @param repository - Complete repository object to write to cache
+ * @returns Promise that resolves when cache is updated
+ * @example
+ * ```typescript
+ * const repo = await fetchRepositoryById(client, repositoryId);
+ * if (repo) {
+ *   await updateCacheWithRepository(token, repo);
+ * }
+ * ```
+ */
 export async function updateCacheWithRepository(token: string, repository: RepoNode): Promise<void> {
   try {
     const ap = await makeApolloClient(token);

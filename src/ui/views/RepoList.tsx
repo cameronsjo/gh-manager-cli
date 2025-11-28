@@ -17,7 +17,7 @@ import { RepoRow, FilterInput, RepoListHeader } from '../components/repo';
 import { SlowSpinner } from '../components/common';
 import { truncate, formatDate, copyToClipboard } from '../../lib/utils';
 import { useDebugMessages } from '../hooks/useDebugMessages';
-import { useModalState } from '../hooks';
+import { useModalState, useVirtualList } from '../hooks';
 
 // Allow customizable repos per fetch via env var (1-50, default from constants)
 const getPageSize = () => {
@@ -1830,23 +1830,16 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
 
   const spacingLines = density; // map density to spacer lines
 
-  // Virtualize list: compute window around cursor if maxVisibleRows provided
-  const windowed = useMemo(() => {
-    const total = visibleItems.length;
-    // Approximate lines: name + stats + optional description (assume 3) + spacing lines
-    const LINES_PER_REPO = 3 + spacingLines;
-    const visibleRepos = Math.max(1, Math.floor(listHeight / LINES_PER_REPO));
-    
-    if (visibleRepos >= total) return { start: 0, end: total };
-    
-    // Add buffer zone to reduce re-renders when scrolling
-    const buffer = 2;
-    const half = Math.floor(visibleRepos / 2);
-    let start = Math.max(0, cursor - half - buffer);
-    start = Math.min(start, Math.max(0, total - visibleRepos));
-    const end = Math.min(total, start + visibleRepos + buffer);
-    return { start, end };
-  }, [visibleItems.length, cursor, listHeight, spacingLines]);
+  // Virtualize list: use optimized virtual scrolling hook
+  // Approximate lines: name + stats + optional description (assume 3) + spacing lines
+  const LINES_PER_REPO = 3 + spacingLines;
+  const { virtualItems, startIndex, endIndex } = useVirtualList({
+    items: visibleItems,
+    itemHeight: LINES_PER_REPO,
+    containerHeight: listHeight,
+    cursor,
+    overscan: 2
+  });
 
   // Infinite scroll: prefetch when at 80% of loaded items
   useEffect(() => {
@@ -2580,23 +2573,20 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
                   <Text color="gray" dimColor>Type at least 3 characters to search</Text>
                 </Box>
               ) : (
-                visibleItems.slice(windowed.start, windowed.end).map((repo, i) => {
-                  const idx = windowed.start + i;
-                  return (
-                    <RepoRow
-                      key={repo.nameWithOwner}
-                      repo={repo}
-                      selected={filterMode && searchActive ? false : idx === cursor}
-                      index={idx + 1}
-                      maxWidth={terminalWidth - 6}
-                      spacingLines={spacingLines}
-                      forkTracking={forkTracking}
-                      starsMode={starsMode}
-                      multiSelectMode={multiSelectMode}
-                      isMultiSelected={selectedRepos.has((repo as any).id)}
-                    />
-                  );
-                })
+                virtualItems.map(({ item: repo, index: idx }) => (
+                  <RepoRow
+                    key={repo.nameWithOwner}
+                    repo={repo}
+                    selected={filterMode && searchActive ? false : idx === cursor}
+                    index={idx + 1}
+                    maxWidth={terminalWidth - 6}
+                    spacingLines={spacingLines}
+                    forkTracking={forkTracking}
+                    starsMode={starsMode}
+                    multiSelectMode={multiSelectMode}
+                    isMultiSelected={selectedRepos.has((repo as any).id)}
+                  />
+                ))
               )}
               
               {/* Infinite scroll loading indicator */}

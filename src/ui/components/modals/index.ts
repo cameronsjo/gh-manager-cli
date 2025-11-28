@@ -10,4 +10,6 @@ export { ChangeVisibilityModal } from './ChangeVisibilityModal';
 export { default as CopyUrlModal } from './CopyUrlModal';
 export { default as RenameModal } from './RenameModal';
 export { StarModal } from './StarModal';
+export { CloneModal } from './CloneModal';
+export type { CloneType } from './CloneModal';
 

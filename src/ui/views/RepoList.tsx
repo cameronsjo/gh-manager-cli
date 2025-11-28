@@ -9,7 +9,8 @@ import type { RepoNode, RateLimitInfo, RestRateLimitInfo } from '../../types';
 import { exec } from 'child_process';
 import OrgSwitcher from '../OrgSwitcher';
 import { logger } from '../../lib/logger';
-import { DeleteModal, ArchiveModal, SyncModal, InfoModal, LogoutModal, VisibilityModal, SortModal, SortDirectionModal, ChangeVisibilityModal, CopyUrlModal, RenameModal, StarModal } from '../components/modals';
+import { DeleteModal, ArchiveModal, SyncModal, InfoModal, LogoutModal, VisibilityModal, SortModal, SortDirectionModal, ChangeVisibilityModal, CopyUrlModal, RenameModal, StarModal, CloneModal } from '../components/modals';
+import type { CloneType } from '../components/modals';
 import { UnstarModal } from '../components/modals/UnstarModal';
 import { RepoRow, FilterInput, RepoListHeader } from '../components/repo';
 import { SlowSpinner } from '../components/common';
@@ -181,6 +182,16 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   const [starTarget, setStarTarget] = useState<RepoNode | null>(null);
   const [starring, setStarring] = useState(false);
   const [starError, setStarError] = useState<string | null>(null);
+
+  // Multi-select mode state
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [selectedRepos, setSelectedRepos] = useState<Set<string>>(new Set());
+
+  // Clone modal state
+  const [cloneMode, setCloneMode] = useState(false);
+  const [cloning, setCloning] = useState(false);
+  const [cloneError, setCloneError] = useState<string | null>(null);
+  const [cloneToast, setCloneToast] = useState<string | null>(null);
 
   // Apply initial --org flag once (if provided)
   const appliedInitialOrg = useRef(false);
@@ -403,6 +414,113 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     setStarring(false);
   }
 
+  // Close clone modal
+  function closeCloneModal() {
+    setCloneMode(false);
+    setCloning(false);
+    setCloneError(null);
+  }
+
+  // Toggle multi-select for a repo
+  function toggleRepoSelection(repoId: string) {
+    setSelectedRepos(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(repoId)) {
+        newSet.delete(repoId);
+      } else {
+        newSet.add(repoId);
+      }
+      return newSet;
+    });
+  }
+
+  // Get selected repos as array
+  function getSelectedReposArray(): RepoNode[] {
+    if (selectedRepos.size === 0) {
+      // If no repos selected, use the current cursor position
+      const repo = visibleItems[cursor];
+      return repo ? [repo] : [];
+    }
+    return visibleItems.filter((r: any) => selectedRepos.has(r.id));
+  }
+
+  // Timer ref for clone toast
+  const cloneToastTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Execute clone operation
+  async function executeClone(repos: RepoNode[], cloneType: CloneType, targetDir: string): Promise<void> {
+    if (cloning || repos.length === 0) return;
+
+    try {
+      setCloning(true);
+      setCloneError(null);
+
+      // Clear any existing timer before cloning
+      if (cloneToastTimerRef.current) {
+        clearTimeout(cloneToastTimerRef.current);
+        cloneToastTimerRef.current = null;
+      }
+
+      // Build and execute clone commands
+      const results: { repo: string; success: boolean; error?: string }[] = [];
+
+      for (const repo of repos) {
+        const sshUrl = `git@github.com:${repo.nameWithOwner}.git`;
+        const repoName = repo.nameWithOwner.split('/')[1];
+        const clonePath = targetDir === '.' ? repoName : `${targetDir}/${repoName}`;
+
+        const cloneCmd = cloneType === 'bare'
+          ? `git clone --bare "${sshUrl}" "${clonePath}.git"`
+          : `git clone "${sshUrl}" "${clonePath}"`;
+
+        try {
+          await new Promise<void>((resolve, reject) => {
+            exec(cloneCmd, (error, stdout, stderr) => {
+              if (error) {
+                reject(new Error(stderr || error.message));
+              } else {
+                resolve();
+              }
+            });
+          });
+          results.push({ repo: repo.nameWithOwner, success: true });
+        } catch (e: any) {
+          results.push({ repo: repo.nameWithOwner, success: false, error: e.message });
+        }
+      }
+
+      // Show results
+      const successCount = results.filter(r => r.success).length;
+      const failCount = results.filter(r => !r.success).length;
+
+      if (failCount === 0) {
+        setCloneToast(`Successfully cloned ${successCount} ${successCount === 1 ? 'repository' : 'repositories'}`);
+        trackSuccessfulOperation();
+        closeCloneModal();
+        // Clear multi-select after successful clone
+        setSelectedRepos(new Set());
+        setMultiSelectMode(false);
+      } else if (successCount === 0) {
+        throw new Error(`Failed to clone: ${results[0].error}`);
+      } else {
+        setCloneToast(`Cloned ${successCount}/${repos.length} repositories (${failCount} failed)`);
+        closeCloneModal();
+        setSelectedRepos(new Set());
+        setMultiSelectMode(false);
+      }
+
+      // Set timer for toast
+      cloneToastTimerRef.current = setTimeout(() => {
+        setCloneToast(null);
+        cloneToastTimerRef.current = null;
+      }, 5000);
+
+    } catch (e: any) {
+      setCloning(false);
+      setCloneError(e.message || 'Failed to clone repositories');
+    }
+  }
+
   async function executeSync() {
     if (!syncTarget || syncing) return;
     
@@ -549,11 +667,14 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     }
   }
 
-  // Clear timer on unmount
+  // Clear timers on unmount
   useEffect(() => {
     return () => {
       if (copyToastTimerRef.current) {
         clearTimeout(copyToastTimerRef.current);
+      }
+      if (cloneToastTimerRef.current) {
+        clearTimeout(cloneToastTimerRef.current);
       }
     };
   }, []);
@@ -1291,6 +1412,11 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       return; // SortDirectionModal component handles its own keyboard input
     }
 
+    // When clone modal is open, trap inputs for modal
+    if (cloneMode) {
+      return; // CloneModal component handles its own keyboard input
+    }
+
     // When in filter mode, only handle input for the TextInput
     if (filterMode) {
       if (key.escape) {
@@ -1588,11 +1714,53 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     }
 
     // Fork tracking is now always on - removed toggle
-    
+
     // Open visibility filter modal (V) - disabled in stars mode
-    if (input && input.toUpperCase() === 'V') {
+    if (input && input.toUpperCase() === 'V' && !key.ctrl) {
       if (!starsMode) {
         setVisibilityMode(true);
+      }
+      return;
+    }
+
+    // Clone modal (Shift+C)
+    if (key.shift && input === 'C') {
+      const reposToClone = getSelectedReposArray();
+      if (reposToClone.length > 0) {
+        setCloneMode(true);
+        setCloneError(null);
+      }
+      return;
+    }
+
+    // Toggle multi-select mode (M)
+    if (input && input.toUpperCase() === 'M' && !key.ctrl && !key.shift) {
+      setMultiSelectMode(prev => {
+        if (prev) {
+          // Exiting multi-select mode - clear selections
+          setSelectedRepos(new Set());
+        }
+        return !prev;
+      });
+      return;
+    }
+
+    // Space to toggle selection in multi-select mode
+    if (input === ' ' && multiSelectMode) {
+      const repo = visibleItems[cursor];
+      if (repo) {
+        toggleRepoSelection((repo as any).id);
+      }
+      return;
+    }
+
+    // Select all in multi-select mode (Ctrl+A when in multi-select)
+    if (key.ctrl && (input === 'a' || input === 'A') && multiSelectMode) {
+      // Toggle between select all and deselect all
+      if (selectedRepos.size === visibleItems.length) {
+        setSelectedRepos(new Set());
+      } else {
+        setSelectedRepos(new Set(visibleItems.map((r: any) => r.id)));
       }
       return;
     }
@@ -1750,7 +1918,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
 
   const lowRate = (rateLimit && rateLimit.remaining <= Math.ceil(rateLimit.limit * 0.1)) || 
                    (restRateLimit && restRateLimit.core.remaining <= Math.ceil(restRateLimit.core.limit * 0.1));
-  const modalOpen = deleteMode || archiveMode || syncMode || logoutMode || infoMode || visibilityMode || sortMode || sortDirectionMode || changeVisibilityMode || copyUrlMode || renameMode;
+  const modalOpen = deleteMode || archiveMode || syncMode || logoutMode || infoMode || visibilityMode || sortMode || sortDirectionMode || changeVisibilityMode || copyUrlMode || renameMode || cloneMode;
 
   // Memoize header to prevent re-renders - must be before any returns
   const headerBar = useMemo(() => (
@@ -2356,6 +2524,15 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
               error={starError}
             />
           </Box>
+        ) : cloneMode ? (
+          <Box height={contentHeight} alignItems="center" justifyContent="center">
+            <CloneModal
+              repos={getSelectedReposArray()}
+              terminalWidth={terminalWidth}
+              onClose={closeCloneModal}
+              onClone={executeClone}
+            />
+          </Box>
         ) : (
           <>
             {/* Context/Filter/sort status */}
@@ -2435,6 +2612,8 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
                       spacingLines={spacingLines}
                       forkTracking={forkTracking}
                       starsMode={starsMode}
+                      multiSelectMode={multiSelectMode}
+                      isMultiSelected={selectedRepos.has((repo as any).id)}
                     />
                   );
                 })
@@ -2466,39 +2645,47 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
         )}
       </Box>
 
-      {/* Help footer - 5 lines */}
+      {/* Help footer - condensed, aligned shortcuts */}
       <Box marginTop={1} paddingX={1} flexDirection="column">
-        {/* Line 1: Basic navigation */}
+        {/* Multi-select indicator */}
+        {multiSelectMode && (
+          <Box width={terminalWidth} justifyContent="center" marginBottom={1}>
+            <Text color="cyan" bold>
+              Multi-Select: {selectedRepos.size} selected • Space Toggle • Ctrl+A All • M Exit • Shift+C Clone
+            </Text>
+          </Box>
+        )}
+        {/* Condensed shortcuts in aligned columns */}
         <Box width={terminalWidth} justifyContent="center">
           <Text color="gray" dimColor={modalOpen ? true : undefined}>
-            ↑↓ Navigate • Ctrl+G Top • G Bottom • ⏎/O Open • R Refresh
+            {starsMode ? (
+              // Stars mode shortcuts - condensed
+              '↑↓ Nav  / Search  S Sort  D Dir  T Dense  I Info  C Copy  U Unstar  W Org  R Refresh  Q Quit'
+            ) : multiSelectMode ? (
+              // Multi-select mode shortcuts - condensed
+              '↑↓ Nav  Space Select  Ctrl+A All  M Exit  Shift+C Clone  Q Quit'
+            ) : (
+              // Normal mode shortcuts - condensed into logical groups
+              `↑↓/G Nav  / Search  S Sort  D Dir  T Dense  ${ownerContext === 'personal' ? 'Shift+S Stars  ' : ''}V Vis  M Multi  Shift+C Clone  ⏎ Open`
+            )}
           </Text>
         </Box>
-        {/* Line 2: Search and filtering */}
+        {!multiSelectMode && !starsMode && (
+          <Box width={terminalWidth} justifyContent="center">
+            <Text color="gray" dimColor={modalOpen ? true : undefined}>
+              I Info  C Copy  Ctrl+S Star  Ctrl+R Rename  Ctrl+A Archive  Ctrl+V ChangeVis  Ctrl+F Sync  Del Delete
+            </Text>
+          </Box>
+        )}
         <Box width={terminalWidth} justifyContent="center">
           <Text color="gray" dimColor={modalOpen ? true : undefined}>
-            / Search • S Sort • D Direction • T Density{!starsMode && ' • V Visibility'}{ownerContext === 'personal' && ' • Shift+S Stars'}
+            {multiSelectMode || starsMode ? '' : 'K Cache  W Org  R Refresh  Ctrl+L Logout  Q Quit'}
           </Text>
         </Box>
-        {/* Line 3: Repository actions */}
-        <Box width={terminalWidth} justifyContent="center">
-          <Text color="gray" dimColor={modalOpen ? true : undefined}>
-            {starsMode ? 
-              'I Info • C Copy URL • U Unstar Repository' :
-              'I Info • C Copy URL • Ctrl+S Un/Star • Ctrl+R Rename • Ctrl+A Un/Archive • Ctrl+V Change Visibility • Ctrl+F Sync Fork'
-            }
-          </Text>
-        </Box>
-        {/* Line 4: System controls */}
-        <Box width={terminalWidth} justifyContent="center">
-          <Text color="gray" dimColor={modalOpen ? true : undefined}>
-            K Cache Info • W Org Switch • Del/Backspace Delete • Ctrl+L Logout • Q Quit
-          </Text>
-        </Box>
-        {/* Line 5: Sponsorship */}
+        {/* Sponsorship */}
         <Box width={terminalWidth} justifyContent="center" marginTop={1}>
           <Text color="yellow" dimColor={modalOpen ? true : undefined}>
-            💖 Sponsor on GitHub: github.com/sponsors/wiiiimm
+            💖 github.com/sponsors/wiiiimm
           </Text>
         </Box>
       </Box>
@@ -2522,6 +2709,15 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
         <Box marginTop={1} justifyContent="center">
           <Box borderStyle="round" borderColor={copyToast.includes('Failed') ? 'red' : 'green'} paddingX={2} paddingY={0}>
             <Text color={copyToast.includes('Failed') ? 'red' : 'green'}>{copyToast}</Text>
+          </Box>
+        </Box>
+      )}
+
+      {/* Clone toast notification */}
+      {cloneToast && (
+        <Box marginTop={1} justifyContent="center">
+          <Box borderStyle="round" borderColor={cloneToast.includes('Failed') || cloneToast.includes('failed') ? 'yellow' : 'green'} paddingX={2} paddingY={0}>
+            <Text color={cloneToast.includes('Failed') || cloneToast.includes('failed') ? 'yellow' : 'green'}>{cloneToast}</Text>
           </Box>
         </Box>
       )}

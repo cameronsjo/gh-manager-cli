@@ -25,6 +25,12 @@ export const REPO_FRAGMENT_WITH_FORK_TRACKING = /* GraphQL */ `
     updatedAt
     pushedAt
     diskUsage
+    issues(states: OPEN) {
+      totalCount
+    }
+    pullRequests(states: OPEN) {
+      totalCount
+    }
     parent {
       nameWithOwner
       defaultBranchRef {
@@ -75,6 +81,12 @@ export const REPO_FRAGMENT_WITHOUT_FORK_TRACKING = /* GraphQL */ `
     updatedAt
     pushedAt
     diskUsage
+    issues(states: OPEN) {
+      totalCount
+    }
+    pullRequests(states: OPEN) {
+      totalCount
+    }
     parent {
       nameWithOwner
     }
@@ -162,6 +174,12 @@ export const VIEWER_REPOS_QUERY = /* GraphQL */ `
           updatedAt
           pushedAt
           diskUsage
+          issues(states: OPEN) {
+            totalCount
+          }
+          pullRequests(states: OPEN) {
+            totalCount
+          }
           parent {
             nameWithOwner
           }
@@ -306,6 +324,8 @@ export const SEARCH_REPOS_QUERY = /* GraphQL */ `
           updatedAt
           pushedAt
           diskUsage
+          issues(states: OPEN) { totalCount }
+          pullRequests(states: OPEN) { totalCount }
           parent { nameWithOwner }
           defaultBranchRef { name }
         }
@@ -345,6 +365,12 @@ export const GET_REPOSITORY_BY_ID_QUERY = /* GraphQL */ `
         stargazerCount
         forkCount
         diskUsage
+        issues(states: OPEN) {
+          totalCount
+        }
+        pullRequests(states: OPEN) {
+          totalCount
+        }
         primaryLanguage {
           name
           color

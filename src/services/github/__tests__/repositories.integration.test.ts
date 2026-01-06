@@ -46,7 +46,8 @@ vi.mock('../client', () => ({
 describe('fetchViewerReposPageUnified', () => {
   const mockToken = 'ghp_test_token';
 
-  const createMockRepo = (id: string, name: string, overrides?: Partial<RepoNode>): RepoNode => ({
+  // Create mock repo in GraphQL response format (with issues/pullRequests objects)
+  const createMockRepoRaw = (id: string, name: string, overrides?: Record<string, unknown>) => ({
     id,
     name,
     nameWithOwner: `testuser/${name}`,
@@ -65,8 +66,39 @@ describe('fetchViewerReposPageUnified', () => {
     parent: null,
     defaultBranchRef: { name: 'main' },
     owner: { __typename: 'User', login: 'testuser' },
+    issues: { totalCount: 3 },
+    pullRequests: { totalCount: 2 },
     ...overrides,
   });
+
+  // Create expected mapped repo (with both raw GraphQL fields and mapped openIssueCount/openPRCount)
+  const createMockRepo = (id: string, name: string, overrides?: Partial<RepoNode> & Record<string, unknown>): RepoNode => ({
+    id,
+    name,
+    nameWithOwner: `testuser/${name}`,
+    description: `Description for ${name}`,
+    visibility: 'PUBLIC',
+    isPrivate: false,
+    isFork: false,
+    isArchived: false,
+    stargazerCount: 10,
+    forkCount: 5,
+    viewerHasStarred: false,
+    primaryLanguage: { name: 'TypeScript', color: '#2b7489' },
+    updatedAt: '2025-01-01T00:00:00Z',
+    pushedAt: '2025-01-01T00:00:00Z',
+    diskUsage: 1024,
+    parent: null,
+    defaultBranchRef: { name: 'main' },
+    owner: { __typename: 'User', login: 'testuser' },
+    // Raw GraphQL fields (spread from original node)
+    issues: { totalCount: 3 },
+    pullRequests: { totalCount: 2 },
+    // Mapped fields
+    openIssueCount: 3,
+    openPRCount: 2,
+    ...overrides,
+  } as RepoNode);
 
   const mockRateLimit: RateLimitInfo = {
     limit: 5000,
@@ -83,7 +115,14 @@ describe('fetchViewerReposPageUnified', () => {
   });
 
   it('should fetch repositories with Apollo Client successfully', async () => {
-    const mockRepos = [
+    // Raw format from GraphQL (with issues/pullRequests objects)
+    const mockReposRaw = [
+      createMockRepoRaw('R_1', 'repo1'),
+      createMockRepoRaw('R_2', 'repo2'),
+      createMockRepoRaw('R_3', 'repo3'),
+    ];
+    // Expected mapped format (with openIssueCount/openPRCount)
+    const expectedRepos = [
       createMockRepo('R_1', 'repo1'),
       createMockRepo('R_2', 'repo2'),
       createMockRepo('R_3', 'repo3'),
@@ -98,7 +137,7 @@ describe('fetchViewerReposPageUnified', () => {
               endCursor: 'cursor_1',
               hasNextPage: false,
             },
-            nodes: mockRepos,
+            nodes: mockReposRaw,
           },
         },
         rateLimit: mockRateLimit,
@@ -110,7 +149,7 @@ describe('fetchViewerReposPageUnified', () => {
     const result = await fetchViewerReposPageUnified(mockToken, 50);
 
     expect(result).toEqual({
-      nodes: mockRepos,
+      nodes: expectedRepos,
       endCursor: 'cursor_1',
       hasNextPage: false,
       totalCount: 3,
@@ -131,9 +170,9 @@ describe('fetchViewerReposPageUnified', () => {
   });
 
   it('should handle pagination with endCursor', async () => {
-    const mockRepos = [
-      createMockRepo('R_4', 'repo4'),
-      createMockRepo('R_5', 'repo5'),
+    const mockReposRaw = [
+      createMockRepoRaw('R_4', 'repo4'),
+      createMockRepoRaw('R_5', 'repo5'),
     ];
 
     mockApolloClient.query.mockResolvedValue({
@@ -145,7 +184,7 @@ describe('fetchViewerReposPageUnified', () => {
               endCursor: 'cursor_2',
               hasNextPage: true,
             },
-            nodes: mockRepos,
+            nodes: mockReposRaw,
           },
         },
         rateLimit: mockRateLimit,
@@ -181,7 +220,7 @@ describe('fetchViewerReposPageUnified', () => {
               endCursor: null,
               hasNextPage: false,
             },
-            nodes: [createMockRepo('R_1', 'repo1')],
+            nodes: [createMockRepoRaw('R_1', 'repo1')],
           },
         },
         rateLimit: mockRateLimit,
@@ -208,7 +247,13 @@ describe('fetchViewerReposPageUnified', () => {
   });
 
   it('should fetch organization repositories', async () => {
-    const mockOrgRepos = [
+    const mockOrgReposRaw = [
+      createMockRepoRaw('R_1', 'org-repo1', {
+        nameWithOwner: 'myorg/org-repo1',
+        owner: { __typename: 'Organization', login: 'myorg' },
+      }),
+    ];
+    const expectedOrgRepos = [
       createMockRepo('R_1', 'org-repo1', {
         nameWithOwner: 'myorg/org-repo1',
         owner: { __typename: 'Organization', login: 'myorg' },
@@ -224,7 +269,7 @@ describe('fetchViewerReposPageUnified', () => {
               endCursor: null,
               hasNextPage: false,
             },
-            nodes: mockOrgRepos,
+            nodes: mockOrgReposRaw,
           },
         },
         rateLimit: mockRateLimit,
@@ -244,7 +289,7 @@ describe('fetchViewerReposPageUnified', () => {
       'myorg'
     );
 
-    expect(result.nodes).toEqual(mockOrgRepos);
+    expect(result.nodes).toEqual(expectedOrgRepos);
     expect(mockApolloClient.query).toHaveBeenCalledWith(
       expect.objectContaining({
         variables: expect.objectContaining({
@@ -255,8 +300,8 @@ describe('fetchViewerReposPageUnified', () => {
   });
 
   it('should filter by privacy', async () => {
-    const mockPrivateRepos = [
-      createMockRepo('R_1', 'private-repo', {
+    const mockPrivateReposRaw = [
+      createMockRepoRaw('R_1', 'private-repo', {
         visibility: 'PRIVATE',
         isPrivate: true,
       }),
@@ -271,7 +316,7 @@ describe('fetchViewerReposPageUnified', () => {
               endCursor: null,
               hasNextPage: false,
             },
-            nodes: mockPrivateRepos,
+            nodes: mockPrivateReposRaw,
           },
         },
         rateLimit: mockRateLimit,
@@ -360,6 +405,31 @@ describe('searchRepositoriesUnified', () => {
   const mockToken = 'ghp_test_token';
   const mockViewer = 'testuser';
 
+  // Create mock repo in GraphQL response format for search results
+  const createMockRepoRaw = (id: string, name: string) => ({
+    id,
+    name,
+    nameWithOwner: `testuser/${name}`,
+    description: `Search result for ${name}`,
+    visibility: 'PUBLIC',
+    isPrivate: false,
+    isFork: false,
+    isArchived: false,
+    stargazerCount: 5,
+    forkCount: 2,
+    viewerHasStarred: false,
+    primaryLanguage: { name: 'JavaScript', color: '#f1e05a' },
+    updatedAt: '2025-01-01T00:00:00Z',
+    pushedAt: '2025-01-01T00:00:00Z',
+    diskUsage: 512,
+    parent: null,
+    defaultBranchRef: { name: 'main' },
+    owner: { __typename: 'User', login: 'testuser' },
+    issues: { totalCount: 3 },
+    pullRequests: { totalCount: 2 },
+  });
+
+  // Create expected mapped repo (with both raw and mapped fields)
   const createMockRepo = (id: string, name: string): RepoNode => ({
     id,
     name,
@@ -379,14 +449,24 @@ describe('searchRepositoriesUnified', () => {
     parent: null,
     defaultBranchRef: { name: 'main' },
     owner: { __typename: 'User', login: 'testuser' },
-  });
+    issues: { totalCount: 3 },
+    pullRequests: { totalCount: 2 },
+    openIssueCount: 3,
+    openPRCount: 2,
+  } as RepoNode);
 
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it('should search repositories successfully', async () => {
-    const mockResults = [
+    // Raw format from GraphQL API
+    const mockResultsRaw = [
+      createMockRepoRaw('R_1', 'search-repo1'),
+      createMockRepoRaw('R_2', 'search-repo2'),
+    ];
+    // Expected mapped format
+    const expectedResults = [
       createMockRepo('R_1', 'search-repo1'),
       createMockRepo('R_2', 'search-repo2'),
     ];
@@ -399,7 +479,7 @@ describe('searchRepositoriesUnified', () => {
             endCursor: 'search_cursor',
             hasNextPage: false,
           },
-          nodes: mockResults,
+          nodes: mockResultsRaw,
         },
         rateLimit: {
           limit: 5000,
@@ -416,7 +496,7 @@ describe('searchRepositoriesUnified', () => {
       50
     );
 
-    expect(result.nodes).toEqual(mockResults);
+    expect(result.nodes).toEqual(expectedResults);
     expect(result.totalCount).toBe(2);
     expect(mockApolloClient.query).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -487,7 +567,7 @@ describe('searchRepositoriesUnified', () => {
   });
 
   it('should handle search with pagination', async () => {
-    const mockResults = [createMockRepo('R_3', 'page2-repo')];
+    const mockResultsRaw = [createMockRepoRaw('R_3', 'page2-repo')];
 
     mockApolloClient.query.mockResolvedValue({
       data: {
@@ -497,7 +577,7 @@ describe('searchRepositoriesUnified', () => {
             endCursor: 'search_cursor_2',
             hasNextPage: true,
           },
-          nodes: mockResults,
+          nodes: mockResultsRaw,
         },
         rateLimit: { limit: 5000, remaining: 4997, resetAt: '2025-01-01T01:00:00Z' },
       },
@@ -539,7 +619,8 @@ describe('getStarredRepositories', () => {
 
   it('should fetch starred repositories', async () => {
     const mockClient = vi.fn();
-    const mockStarredRepos = [
+    // Raw format from GraphQL API
+    const mockStarredReposRaw = [
       {
         id: 'R_1',
         name: 'starred-repo',
@@ -559,6 +640,35 @@ describe('getStarredRepositories', () => {
         parent: null,
         defaultBranchRef: { name: 'main' },
         owner: { __typename: 'User' as const, login: 'otheruser' },
+        issues: { totalCount: 5 },
+        pullRequests: { totalCount: 3 },
+      },
+    ];
+    // Expected mapped format
+    const expectedStarredRepos = [
+      {
+        id: 'R_1',
+        name: 'starred-repo',
+        nameWithOwner: 'otheruser/starred-repo',
+        description: 'A starred repository',
+        visibility: 'PUBLIC' as const,
+        isPrivate: false,
+        isFork: false,
+        isArchived: false,
+        stargazerCount: 100,
+        forkCount: 20,
+        viewerHasStarred: true,
+        primaryLanguage: { name: 'Python', color: '#3572A5' },
+        updatedAt: '2025-01-01T00:00:00Z',
+        pushedAt: '2025-01-01T00:00:00Z',
+        diskUsage: 2048,
+        parent: null,
+        defaultBranchRef: { name: 'main' },
+        owner: { __typename: 'User' as const, login: 'otheruser' },
+        issues: { totalCount: 5 },
+        pullRequests: { totalCount: 3 },
+        openIssueCount: 5,
+        openPRCount: 3,
       },
     ];
 
@@ -570,7 +680,7 @@ describe('getStarredRepositories', () => {
             endCursor: 'starred_cursor',
             hasNextPage: false,
           },
-          nodes: mockStarredRepos,
+          nodes: mockStarredReposRaw,
         },
       },
       rateLimit: {
@@ -582,7 +692,7 @@ describe('getStarredRepositories', () => {
 
     const result = await getStarredRepositories(mockClient, 50);
 
-    expect(result.nodes).toEqual(mockStarredRepos);
+    expect(result.nodes).toEqual(expectedStarredRepos);
     expect(result.totalCount).toBe(1);
     expect(result.hasNextPage).toBe(false);
   });
@@ -626,7 +736,8 @@ describe('getRepositoryFromCache', () => {
   });
 
   it('should retrieve repository from cache', async () => {
-    const mockRepo: RepoNode = {
+    // Raw format from cache (with issues/pullRequests objects)
+    const mockRepoRaw = {
       id: 'R_cached',
       name: 'cached-repo',
       nameWithOwner: 'testuser/cached-repo',
@@ -643,13 +754,38 @@ describe('getRepositoryFromCache', () => {
       diskUsage: 1024,
       parent: null,
       defaultBranchRef: { name: 'main' },
+      issues: { totalCount: 4 },
+      pullRequests: { totalCount: 1 },
+    };
+    // Expected mapped format
+    const expectedRepo = {
+      id: 'R_cached',
+      name: 'cached-repo',
+      nameWithOwner: 'testuser/cached-repo',
+      description: 'From cache',
+      visibility: 'PUBLIC',
+      isPrivate: false,
+      isFork: false,
+      isArchived: false,
+      stargazerCount: 15,
+      forkCount: 3,
+      primaryLanguage: { name: 'TypeScript', color: '#2b7489' },
+      updatedAt: '2025-01-01T00:00:00Z',
+      pushedAt: '2025-01-01T00:00:00Z',
+      diskUsage: 1024,
+      parent: null,
+      defaultBranchRef: { name: 'main' },
+      issues: { totalCount: 4 },
+      pullRequests: { totalCount: 1 },
+      openIssueCount: 4,
+      openPRCount: 1,
     };
 
-    mockApolloClient.cache.readFragment.mockReturnValue(mockRepo);
+    mockApolloClient.cache.readFragment.mockReturnValue(mockRepoRaw);
 
     const result = await getRepositoryFromCache('ghp_token', 'R_cached');
 
-    expect(result).toEqual(mockRepo);
+    expect(result).toEqual(expectedRepo);
     expect(mockApolloClient.cache.readFragment).toHaveBeenCalledWith(
       expect.objectContaining({
         id: 'Repository:R_cached',

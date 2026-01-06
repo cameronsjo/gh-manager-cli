@@ -88,7 +88,19 @@ function RepoRow({
     let line2 = '     ';
     const metaColor = selected ? chalk.white : chalk.gray;
     if (langName) line2 += chalk.hex(langColor)('● ') + metaColor(`${langName}  `);
-    line2 += metaColor(`★ ${repo.stargazerCount}  ⑂ ${repo.forkCount}  Updated ${formatDate(repo.updatedAt)}`);
+    line2 += metaColor(`★ ${repo.stargazerCount}  ⑂ ${repo.forkCount}`);
+
+    // Add PR count if > 0
+    if (repo.openPRCount && repo.openPRCount > 0) {
+      line2 += metaColor('  ') + chalk.cyan(`⎇ ${repo.openPRCount}`);
+    }
+
+    // Add issue count if > 0
+    if (repo.openIssueCount && repo.openIssueCount > 0) {
+      line2 += metaColor('  ') + chalk.yellow(`⚠ ${repo.openIssueCount}`);
+    }
+
+    line2 += metaColor(`  Updated ${formatDate(repo.updatedAt)}`);
 
     // Build line 3
     const line3 = repo.description ? `     ${truncate(repo.description, Math.max(30, maxWidth - 10))}` : null;
@@ -110,6 +122,8 @@ function RepoRow({
     repo.owner?.__typename,
     repo.stargazerCount,
     repo.forkCount,
+    repo.openIssueCount,
+    repo.openPRCount,
     repo.updatedAt,
     repo.description,
     selected,

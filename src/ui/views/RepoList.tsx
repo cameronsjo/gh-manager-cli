@@ -4,6 +4,7 @@ import TextInput from 'ink-text-input';
 import chalk from 'chalk';
 import { makeClient, fetchViewerReposPageUnified, searchRepositoriesUnified, deleteRepositoryRest, archiveRepositoryById, unarchiveRepositoryById, changeRepositoryVisibility, syncForkWithUpstream, getRepositoryFromCache, purgeApolloCacheFiles, inspectCacheStatus, updateCacheAfterDelete, updateCacheAfterArchive, updateCacheAfterVisibilityChange, updateCacheWithRepository, checkOrganizationIsEnterprise, OwnerAffiliation, fetchViewerOrganizations, fetchRestRateLimits, renameRepositoryById, updateCacheAfterRename, getStarredRepositories, starRepository, unstarRepository } from '../../services/github';
 import { getUIPrefs, storeUIPrefs, OwnerContext } from '../../config/config';
+import { themeNames } from '../../config/themes';
 import { DEFAULT_PAGE_SIZE, PREFETCH_THRESHOLD, DELETE_CODE_LENGTH, DEBUG_MESSAGE_LIMIT, MIN_SEARCH_LENGTH } from '../../config/constants';
 import { makeApolloKey, makeSearchKey, isFresh, markFetched } from '../../services/apolloMeta';
 import type { RepoNode, RateLimitInfo, RestRateLimitInfo } from '../../types';
@@ -16,6 +17,7 @@ import { UnstarModal } from '../components/modals/UnstarModal';
 import { RepoRow, FilterInput, RepoListHeader } from '../components/repo';
 import { SlowSpinner } from '../components/common';
 import { truncate, formatDate, copyToClipboard } from '../../lib/utils';
+import { fuzzyFilter } from '../../lib/fuzzySearch';
 import { useDebugMessages } from '../hooks/useDebugMessages';
 import { useModalState, useVirtualList } from '../hooks';
 
@@ -180,6 +182,10 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   // Clone modal state
   const cloneModal = useModalState<RepoNode>();
   const [cloneToast, setCloneToast] = useState<string | null>(null);
+
+  // Theme state
+  const [themeName, setThemeName] = useState<string>('default');
+  const [themeToast, setThemeToast] = useState<string | null>(null);
 
   // Apply initial --org flag once (if provided)
   const appliedInitialOrg = useRef(false);
@@ -603,6 +609,9 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   // Timer ref for copy toast
   const copyToastTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Timer ref for theme toast
+  const themeToastTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   // Handler for copy URL
   async function handleCopyUrl(url: string, type: 'SSH' | 'HTTPS'): Promise<void> {
     try {
@@ -648,6 +657,9 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       }
       if (cloneToastTimerRef.current) {
         clearTimeout(cloneToastTimerRef.current);
+      }
+      if (themeToastTimerRef.current) {
+        clearTimeout(themeToastTimerRef.current);
       }
     };
   }, []);
@@ -1008,7 +1020,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     }
   };
 
-  // Load UI preferences (density, sort key/dir, fork tracking, owner context, visibility filter) on mount
+  // Load UI preferences (density, sort key/dir, fork tracking, owner context, visibility filter, theme) on mount
   useEffect(() => {
     const ui = getUIPrefs();
     if (ui.density !== undefined) setDensity(ui.density as 0 | 1 | 2);
@@ -1020,12 +1032,17 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     }
     // Fork tracking is now always ON
     setForkTracking(true);
-    
+
     // Load visibility filter
     if (ui.visibilityFilter && ['all', 'public', 'private', 'internal'].includes(ui.visibilityFilter)) {
       setVisibilityFilter(ui.visibilityFilter as VisibilityFilter);
     }
-    
+
+    // Load theme
+    if (ui.theme && themeNames.includes(ui.theme)) {
+      setThemeName(ui.theme);
+    }
+
     // Load organization context
     if (ui.ownerContext) {
       setOwnerContext(ui.ownerContext);
@@ -1033,7 +1050,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       if (onOrgContextChange) {
         handleOrgContextChangeRef.current?.(ui.ownerContext);
       }
-      
+
       // Check if organization is enterprise
       if (ui.ownerContext !== 'personal') {
         const client = makeClient(token);
@@ -1042,12 +1059,12 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
         });
       }
     }
-    
+
     // Load owner affiliations
     if (ui.ownerAffiliations && Array.isArray(ui.ownerAffiliations)) {
       setOwnerAffiliations(ui.ownerAffiliations as OwnerAffiliation[]);
     }
-    
+
     setPrefsLoaded(true);
   }, [onOrgContextChange]);
 
@@ -1667,13 +1684,41 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       return;
     }
 
-    // Toggle display density
-    if (input && input.toUpperCase() === 'T') {
+    // Toggle display density (T without shift)
+    if (input && input.toUpperCase() === 'T' && !key.shift) {
       setDensity((d) => {
         const next = (((d + 1) % 3) as 0 | 1 | 2);
         storeUIPrefs({ density: next });
         return next;
       });
+      return;
+    }
+
+    // Cycle theme (Shift+T)
+    if (key.shift && input === 'T') {
+      // Clear any existing timer
+      if (themeToastTimerRef.current) {
+        clearTimeout(themeToastTimerRef.current);
+        themeToastTimerRef.current = null;
+      }
+
+      // Cycle to next theme
+      const currentIndex = themeNames.indexOf(themeName);
+      const nextIndex = (currentIndex + 1) % themeNames.length;
+      const nextTheme = themeNames[nextIndex];
+
+      setThemeName(nextTheme);
+      storeUIPrefs({ theme: nextTheme });
+
+      // Show toast with theme name
+      setThemeToast(`Theme: ${nextTheme.charAt(0).toUpperCase() + nextTheme.slice(1)}`);
+
+      // Set timer to clear toast
+      themeToastTimerRef.current = setTimeout(() => {
+        setThemeToast(null);
+        themeToastTimerRef.current = null;
+      }, 2000);
+
       return;
     }
 
@@ -1735,7 +1780,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   // Derived: filtered + sorted items (local filter applies only when search not active)
   const filtered = useMemo(() => {
     let result = items;
-    
+
     // Apply visibility filter locally
     // Match GitHub's behavior: Private filter includes both PRIVATE and INTERNAL
     if (visibilityFilter === 'private') {
@@ -1743,16 +1788,13 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
       result = result.filter(r => r.visibility === 'PRIVATE' || r.visibility === 'INTERNAL');
     }
     // Note: Public filtering is done at the API level and works correctly
-    
-    // Apply text filter
-    const q = filter.trim().toLowerCase();
+
+    // Apply text filter with fuzzy search
+    const q = filter.trim();
     if (q) {
-      result = result.filter(r =>
-        r.nameWithOwner.toLowerCase().includes(q) ||
-        (r.description ? r.description.toLowerCase().includes(q) : false)
-      );
+      result = fuzzyFilter(result, q);
     }
-    
+
     return result;
   }, [items, filter, visibilityFilter]);
 
@@ -2630,13 +2672,13 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
           <Text color="gray" dimColor={modalOpen ? true : undefined}>
             {starsMode ? (
               // Stars mode shortcuts - condensed
-              '↑↓ Nav  / Search  S Sort  D Dir  T Dense  I Info  C Copy  U Unstar  W Org  R Refresh  Q Quit'
+              '↑↓ Nav  / Search  S Sort  D Dir  T Dense  Shift+T Theme  I Info  C Copy  U Unstar  W Org  R Refresh  Q Quit'
             ) : multiSelectMode ? (
               // Multi-select mode shortcuts - condensed
               '↑↓ Nav  Space Select  Ctrl+A All  M Exit  Shift+C Clone  Q Quit'
             ) : (
               // Normal mode shortcuts - condensed into logical groups
-              `↑↓/G Nav  / Search  S Sort  D Dir  T Dense  ${ownerContext === 'personal' ? 'Shift+S Stars  ' : ''}V Vis  M Multi  Shift+C Clone  ⏎ Open`
+              `↑↓/G Nav  / Search  S Sort  D Dir  T Dense  Shift+T Theme  ${ownerContext === 'personal' ? 'Shift+S Stars  ' : ''}V Vis  M Multi  Shift+C Clone  ⏎ Open`
             )}
           </Text>
         </Box>
@@ -2688,6 +2730,15 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
         <Box marginTop={1} justifyContent="center">
           <Box borderStyle="round" borderColor={cloneToast.includes('Failed') || cloneToast.includes('failed') ? 'yellow' : 'green'} paddingX={2} paddingY={0}>
             <Text color={cloneToast.includes('Failed') || cloneToast.includes('failed') ? 'yellow' : 'green'}>{cloneToast}</Text>
+          </Box>
+        </Box>
+      )}
+
+      {/* Theme toast notification */}
+      {themeToast && (
+        <Box marginTop={1} justifyContent="center">
+          <Box borderStyle="round" borderColor="cyan" paddingX={2} paddingY={0}>
+            <Text color="cyan">{themeToast}</Text>
           </Box>
         </Box>
       )}

@@ -88,6 +88,8 @@ export interface RepoNode {
   updatedAt: string; // ISO
   pushedAt: string; // ISO
   diskUsage: number; // KB
+  openIssueCount?: number;
+  openPRCount?: number;
   parent: Maybe<{
     nameWithOwner: string;
     defaultBranchRef?: {

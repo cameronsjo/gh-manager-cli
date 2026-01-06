@@ -35,3 +35,9 @@ export type { UseInfiniteScrollOptions } from './useInfiniteScroll';
  */
 export { useVirtualList, useScrollToIndex } from './useVirtualList';
 export type { UseVirtualListOptions, VirtualListResult, VirtualItem } from './useVirtualList';
+
+/**
+ * Theme color management hook with pre-bound chalk functions
+ * @see {@link ./useTheme}
+ */
+export { useTheme } from './useTheme';

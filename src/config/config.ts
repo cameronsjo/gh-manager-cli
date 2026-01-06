@@ -15,6 +15,7 @@ interface UIPrefs {
   ownerAffiliations?: string[];
   ownerContext?: OwnerContext;
   visibilityFilter?: 'all' | 'public' | 'private';
+  theme?: string;
 }
 
 export type TokenSource = 'pat' | 'oauth';

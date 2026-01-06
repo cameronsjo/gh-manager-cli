@@ -40,6 +40,23 @@ export interface ReposPageResult {
 export type OwnerAffiliation = 'OWNER' | 'COLLABORATOR' | 'ORGANIZATION_MEMBER';
 
 /**
+ * Maps GraphQL repository response to RepoNode type
+ *
+ * Transforms nested GraphQL response fields like issues.totalCount and
+ * pullRequests.totalCount to the flat structure expected by RepoNode.
+ *
+ * @param node - Raw repository node from GraphQL response
+ * @returns Mapped RepoNode with properly structured fields
+ */
+function mapRepoNode(node: any): RepoNode {
+  return {
+    ...node,
+    openIssueCount: node.issues?.totalCount ?? 0,
+    openPRCount: node.pullRequests?.totalCount ?? 0,
+  };
+}
+
+/**
  * Fetches the authenticated user's GitHub login username
  *
  * @param client - GitHub GraphQL client instance created by makeClient
@@ -229,6 +246,12 @@ export async function fetchViewerReposPage(
               updatedAt
               pushedAt
               diskUsage
+              issues(states: OPEN) {
+                totalCount
+              }
+              pullRequests(states: OPEN) {
+                totalCount
+              }
               owner {
                 __typename
                 login
@@ -279,7 +302,7 @@ export async function fetchViewerReposPage(
 
     const data = res.organization.repositories;
     return {
-      nodes: data.nodes as RepoNode[],
+      nodes: data.nodes.map(mapRepoNode),
       endCursor: data.pageInfo.endCursor,
       hasNextPage: data.pageInfo.hasNextPage,
       totalCount: data.totalCount,
@@ -333,6 +356,12 @@ export async function fetchViewerReposPage(
             updatedAt
             pushedAt
             diskUsage
+            issues(states: OPEN) {
+              totalCount
+            }
+            pullRequests(states: OPEN) {
+              totalCount
+            }
             ${includeForkTracking ? `
             parent {
               nameWithOwner
@@ -381,7 +410,7 @@ export async function fetchViewerReposPage(
     const data = res.viewer.repositories;
     logger.info(`Octokit successfully fetched ${data.nodes.length} repositories`);
     return {
-      nodes: data.nodes as RepoNode[],
+      nodes: data.nodes.map(mapRepoNode),
       endCursor: data.pageInfo.endCursor,
       hasNextPage: data.pageInfo.hasNextPage,
       totalCount: data.totalCount,
@@ -497,6 +526,8 @@ export async function fetchViewerReposPageUnified(
                   updatedAt
                   pushedAt
                   diskUsage
+                  issues(states: OPEN) { totalCount }
+                  pullRequests(states: OPEN) { totalCount }
                   ${includeForkTracking ? `
                   parent { nameWithOwner defaultBranchRef { name target { ... on Commit { history(first: 0) { totalCount } } } } }
                   defaultBranchRef { name target { ... on Commit { history(first: 0) { totalCount } } } }` : `
@@ -534,6 +565,8 @@ export async function fetchViewerReposPageUnified(
                   updatedAt
                   pushedAt
                   diskUsage
+                  issues(states: OPEN) { totalCount }
+                  pullRequests(states: OPEN) { totalCount }
                   ${includeForkTracking ? `
                   parent { nameWithOwner defaultBranchRef { name target { ... on Commit { history(first: 0) { totalCount } } } } }
                   defaultBranchRef { name target { ... on Commit { history(first: 0) { totalCount } } } }` : `
@@ -578,7 +611,7 @@ export async function fetchViewerReposPageUnified(
       });
 
       return {
-        nodes: data.nodes as RepoNode[],
+        nodes: data.nodes.map(mapRepoNode),
         endCursor: data.pageInfo.endCursor,
         hasNextPage: data.pageInfo.hasNextPage,
         totalCount: data.totalCount,
@@ -683,6 +716,8 @@ export async function searchRepositoriesUnified(
               updatedAt
               pushedAt
               diskUsage
+              issues(states: OPEN) { totalCount }
+              pullRequests(states: OPEN) { totalCount }
               ${includeForkTracking ? `
               parent { nameWithOwner defaultBranchRef { name target { ... on Commit { history(first: 0) { totalCount } } } } }
               defaultBranchRef { name target { ... on Commit { history(first: 0) { totalCount } } } }` : `
@@ -700,7 +735,7 @@ export async function searchRepositoriesUnified(
     });
     const data = res.data.search;
     return {
-      nodes: data.nodes as RepoNode[],
+      nodes: data.nodes.map(mapRepoNode),
       endCursor: data.pageInfo.endCursor,
       hasNextPage: data.pageInfo.hasNextPage,
       totalCount: data.repositoryCount,
@@ -769,7 +804,7 @@ export async function getStarredRepositories(
     });
 
     return {
-      nodes: data.nodes as RepoNode[],
+      nodes: data.nodes.map(mapRepoNode),
       endCursor: data.pageInfo.endCursor,
       hasNextPage: data.pageInfo.hasNextPage,
       totalCount: data.totalCount,
@@ -809,7 +844,7 @@ export async function fetchRepositoryById(
     includeForkTracking
   });
 
-  return result.node;
+  return result.node ? mapRepoNode(result.node) : null;
 }
 
 /**
@@ -854,6 +889,12 @@ export async function getRepositoryFromCache(token: string, repositoryId: string
           stargazerCount
           forkCount
           diskUsage
+          issues(states: OPEN) {
+            totalCount
+          }
+          pullRequests(states: OPEN) {
+            totalCount
+          }
           primaryLanguage {
             name
             color
@@ -884,7 +925,7 @@ export async function getRepositoryFromCache(token: string, repositoryId: string
       `
     });
 
-    return cached as RepoNode | null;
+    return cached ? mapRepoNode(cached) : null;
   } catch {
     return null;
   }

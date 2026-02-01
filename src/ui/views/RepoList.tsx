@@ -99,7 +99,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   const [restRateLimit, setRestRateLimit] = useState<RestRateLimitInfo | undefined>(undefined);
   const [prevRestRateLimit, setPrevRestRateLimit] = useState<number | undefined>(undefined);
   // Display density: 0 = compact (0 lines), 1 = cozy (1 line), 2 = comfy (2 lines)
-  const [density, setDensity] = useState<0 | 1 | 2>(2);
+  const [density, setDensity] = useState<0 | 1 | 2>(0);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
   
   // Organization context state

@@ -256,10 +256,9 @@ export function CloneModal({ repos, terminalWidth, onClose, onClone }: CloneModa
       width={modalWidth}
     >
       <Text bold color="green">Clone {repos.length === 1 ? 'Repository' : `${repos.length} Repositories`}</Text>
-      <Box height={1}><Text> </Text></Box>
 
       {/* Repository list */}
-      <Box flexDirection="column" marginBottom={1}>
+      <Box flexDirection="column" marginTop={1}>
         {repos.slice(0, 5).map((repo, i) => (
           <Text key={repo.nameWithOwner} color="white">
             {chalk.cyan(`${i + 1}.`)} {repo.nameWithOwner}
@@ -297,14 +296,6 @@ export function CloneModal({ repos, terminalWidth, onClose, onClone }: CloneModa
         </Box>
       </Box>
 
-      <Box marginTop={1}>
-        <Text color="gray" dimColor>
-          {cloneType === 'simple'
-            ? 'Standard clone with working directory'
-            : 'Bare clone for git worktrees (no working directory)'}
-        </Text>
-      </Box>
-      <Box height={1}><Text> </Text></Box>
 
       {/* Path preset selector */}
       <Text color="gray">Target Path:</Text>
@@ -352,14 +343,6 @@ export function CloneModal({ repos, terminalWidth, onClose, onClone }: CloneModa
         )}
       </Box>
 
-      <Box marginTop={1}>
-        <Text color="gray" dimColor>
-          {pathPreset === 'custom'
-            ? 'Supports: {owner}, {repo}, {full}'
-            : PATH_PRESETS[pathPreset].description}
-        </Text>
-      </Box>
-      <Box height={1}><Text> </Text></Box>
 
       {/* Action buttons */}
       {cloning ? (

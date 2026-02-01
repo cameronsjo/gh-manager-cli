@@ -179,10 +179,9 @@ export default function DeleteModal({ repos, onDelete, onCancel }: DeleteModalPr
         // First stage: Enter verification code
         <>
           <Text bold color="red">⚠️ Delete {repos.length === 1 ? 'Repository' : `${repos.length} Repositories`}</Text>
-          <Box height={1}><Text> </Text></Box>
 
           {/* Show repository list */}
-          <Box flexDirection="column" marginBottom={1}>
+          <Box flexDirection="column" marginTop={1}>
             {displayRepos.map((repo, i) => (
               <Text key={repo.id} color="white">
                 {chalk.cyan(`${i + 1}.`)} {repo.nameWithOwner}
@@ -194,11 +193,9 @@ export default function DeleteModal({ repos, onDelete, onCancel }: DeleteModalPr
           </Box>
 
           <Box height={1}><Text> </Text></Box>
-          <Text>This action cannot be undone. This will permanently delete {repos.length === 1 ? 'the' : 'these'}</Text>
-          <Text>{repos.length === 1 ? 'repository' : 'repositories'}, including all wiki, issues, comments, packages, secrets,</Text>
-          <Text>workflows, and releases.</Text>
+          <Text color="red">⚠️  This CANNOT be undone</Text>
           <Box height={1}><Text> </Text></Box>
-          <Text>To confirm, please type <Text color="yellow" bold>{deleteCode}</Text> below:</Text>
+          <Text>Type <Text color="yellow" bold>{deleteCode}</Text> to confirm:</Text>
           <Box marginTop={1}>
             <Text>Verification code: </Text>
             <TextInput
@@ -220,7 +217,6 @@ export default function DeleteModal({ repos, onDelete, onCancel }: DeleteModalPr
         // Second stage: Final confirmation and deletion progress
         <>
           <Text bold color="red">⚠️ Delete {repos.length === 1 ? 'Repository' : `${repos.length} Repositories`}</Text>
-          <Box height={1}><Text> </Text></Box>
 
           {!deleting ? (
             <>
@@ -234,8 +230,7 @@ export default function DeleteModal({ repos, onDelete, onCancel }: DeleteModalPr
                 <Text color="gray">... and {repos.length - 5} more</Text>
               )}
               <Box height={1}><Text> </Text></Box>
-              <Text>Are you absolutely sure you want to delete {repos.length === 1 ? 'this repository' : 'these repositories'}?</Text>
-              <Text>This action <Text bold>CANNOT</Text> be undone.</Text>
+              <Text color="red">Ready to delete?</Text>
 
               {/* Action buttons */}
               <Box marginTop={2} flexDirection="row" justifyContent="center" gap={4}>

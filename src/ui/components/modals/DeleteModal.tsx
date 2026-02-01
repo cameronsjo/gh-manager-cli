@@ -5,23 +5,36 @@ import chalk from 'chalk';
 import type { RepoNode } from '../../../types';
 import { SlowSpinner } from '../common';
 
+interface DeleteProgress {
+  current: number;        // 1-based index
+  total: number;
+  currentRepo: RepoNode;
+  completed: string[];    // Repo IDs
+  failed: Array<{
+    repoId: string;
+    repoName: string;
+    error: string;
+  }>;
+}
+
 interface DeleteModalProps {
-  repo: RepoNode | null;
-  onDelete: (repo: RepoNode) => Promise<void>;
+  repos: RepoNode[];
+  onDelete: (repos: RepoNode[]) => Promise<void>;
   onCancel: () => void;
 }
 
-export default function DeleteModal({ repo, onDelete, onCancel }: DeleteModalProps) {
+export default function DeleteModal({ repos, onDelete, onCancel }: DeleteModalProps) {
   const [deleteCode, setDeleteCode] = useState('');
   const [typedCode, setTypedCode] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteConfirmStage, setDeleteConfirmStage] = useState(false); // true after code verified
   const [confirmFocus, setConfirmFocus] = useState<'delete' | 'cancel'>('delete');
+  const [progress, setProgress] = useState<DeleteProgress | null>(null);
 
   // Generate a random 6-character code when the modal opens
   useEffect(() => {
-    if (repo) {
+    if (repos.length > 0) {
       const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Omit similar-looking chars
       let code = '';
       for (let i = 0; i < 6; i++) {
@@ -32,8 +45,9 @@ export default function DeleteModal({ repo, onDelete, onCancel }: DeleteModalPro
       setDeleteConfirmStage(false);
       setConfirmFocus('delete');
       setDeleteError(null);
+      setProgress(null);
     }
-  }, [repo]);
+  }, [repos.length]);
 
   // Handle keyboard input for the confirmation stage
   useInput((input, key) => {
@@ -65,14 +79,74 @@ export default function DeleteModal({ repo, onDelete, onCancel }: DeleteModalPro
 
   // Handle the delete confirmation
   const handleDeleteConfirm = async () => {
-    if (!repo || deleting) return;
-    
+    if (repos.length === 0 || deleting) return;
+
     try {
       setDeleting(true);
       setDeleteError(null);
-      await onDelete(repo);
+
+      // Initialize progress
+      const initialProgress: DeleteProgress = {
+        current: 0,
+        total: repos.length,
+        currentRepo: repos[0],
+        completed: [],
+        failed: [],
+      };
+      setProgress(initialProgress);
+
+      // Process repos sequentially
+      for (let i = 0; i < repos.length; i++) {
+        const repo = repos[i];
+
+        // Update progress to show current repo
+        setProgress(prev => prev ? {
+          ...prev,
+          current: i + 1,
+          currentRepo: repo,
+        } : null);
+
+        try {
+          // Call the delete handler with single repo wrapped in array
+          await onDelete([repo]);
+
+          // Add to completed
+          setProgress(prev => prev ? {
+            ...prev,
+            completed: [...prev.completed, repo.id],
+          } : null);
+        } catch (e: any) {
+          // Add to failed, continue with next repo
+          setProgress(prev => prev ? {
+            ...prev,
+            failed: [...prev.failed, {
+              repoId: repo.id,
+              repoName: repo.nameWithOwner,
+              error: e.message || 'Failed to delete repository',
+            }],
+          } : null);
+        }
+      }
+
+      // Check final results
+      const finalProgress = progress || initialProgress;
+      if (finalProgress.failed.length === 0) {
+        // All succeeded - will auto-close via parent component
+        // Parent should handle success toast
+      } else if (finalProgress.completed.length === 0) {
+        // All failed
+        setDeleteError(`Failed to delete all ${repos.length} repositories. See details below.`);
+        setDeleting(false);
+      } else {
+        // Partial success
+        setDeleteError(
+          `Deleted ${finalProgress.completed.length} of ${repos.length} repositories. ` +
+          `${finalProgress.failed.length} failed.`
+        );
+        setDeleting(false);
+      }
     } catch (e: any) {
-      setDeleteError(e.message || 'Failed to delete repository');
+      setDeleteError(e.message || 'Failed to delete repositories');
       setDeleting(false);
     }
   };
@@ -87,7 +161,10 @@ export default function DeleteModal({ repo, onDelete, onCancel }: DeleteModalPro
     }
   };
 
-  if (!repo) return null;
+  if (repos.length === 0) return null;
+
+  const displayRepos = repos.slice(0, 5);
+  const hasMore = repos.length > 5;
 
   return (
     <Box 
@@ -101,13 +178,25 @@ export default function DeleteModal({ repo, onDelete, onCancel }: DeleteModalPro
       {!deleteConfirmStage ? (
         // First stage: Enter verification code
         <>
-          <Text bold color="red">⚠️ Delete Repository</Text>
+          <Text bold color="red">⚠️ Delete {repos.length === 1 ? 'Repository' : `${repos.length} Repositories`}</Text>
           <Box height={1}><Text> </Text></Box>
-          <Text bold>{repo.nameWithOwner}</Text>
+
+          {/* Show repository list */}
+          <Box flexDirection="column" marginBottom={1}>
+            {displayRepos.map((repo, i) => (
+              <Text key={repo.id} color="white">
+                {chalk.cyan(`${i + 1}.`)} {repo.nameWithOwner}
+              </Text>
+            ))}
+            {hasMore && (
+              <Text color="gray">... and {repos.length - 5} more</Text>
+            )}
+          </Box>
+
           <Box height={1}><Text> </Text></Box>
-          <Text>This action cannot be undone. This will permanently delete the</Text>
-          <Text>repository, wiki, issues, comments, packages, secrets, workflows,</Text>
-          <Text>and releases associated with this repository.</Text>
+          <Text>This action cannot be undone. This will permanently delete {repos.length === 1 ? 'the' : 'these'}</Text>
+          <Text>{repos.length === 1 ? 'repository' : 'repositories'}, including all wiki, issues, comments, packages, secrets,</Text>
+          <Text>workflows, and releases.</Text>
           <Box height={1}><Text> </Text></Box>
           <Text>To confirm, please type <Text color="yellow" bold>{deleteCode}</Text> below:</Text>
           <Box marginTop={1}>
@@ -128,25 +217,58 @@ export default function DeleteModal({ repo, onDelete, onCancel }: DeleteModalPro
           </Box>
         </>
       ) : (
-        // Second stage: Final confirmation
+        // Second stage: Final confirmation and deletion progress
         <>
-          <Text bold color="red">⚠️ Delete Repository</Text>
+          <Text bold color="red">⚠️ Delete {repos.length === 1 ? 'Repository' : `${repos.length} Repositories`}</Text>
           <Box height={1}><Text> </Text></Box>
-          <Text bold>{repo.nameWithOwner}</Text>
-          <Box height={1}><Text> </Text></Box>
-          <Text>Are you absolutely sure you want to delete this repository?</Text>
-          <Text>This action <Text bold>CANNOT</Text> be undone.</Text>
-          
-          {deleting ? (
+
+          {!deleting ? (
+            <>
+              {/* Pre-deletion confirmation */}
+              {displayRepos.map((repo, i) => (
+                <Text key={repo.id} bold>
+                  {chalk.cyan(`${i + 1}.`)} {repo.nameWithOwner}
+                </Text>
+              ))}
+              {hasMore && (
+                <Text color="gray">... and {repos.length - 5} more</Text>
+              )}
+              <Box height={1}><Text> </Text></Box>
+              <Text>Are you absolutely sure you want to delete {repos.length === 1 ? 'this repository' : 'these repositories'}?</Text>
+              <Text>This action <Text bold>CANNOT</Text> be undone.</Text>
+            </>
+          ) : progress ? (
+            <>
+              {/* Show progress during deletion */}
+              <Text color="yellow">
+                Deleting repository {progress.current} of {progress.total}:
+              </Text>
+              <Text bold color="white" marginTop={1}>
+                {progress.currentRepo.nameWithOwner}
+              </Text>
+              <Box marginTop={2} justifyContent="center">
+                <Box flexDirection="row">
+                  <Box marginRight={1}>
+                    <SlowSpinner />
+                  </Box>
+                  <Text color="gray">
+                    {progress.completed.length} completed, {progress.failed.length} failed
+                  </Text>
+                </Box>
+              </Box>
+            </>
+          ) : (
             <Box marginTop={2} justifyContent="center">
               <Box flexDirection="row">
                 <Box marginRight={1}>
                   <SlowSpinner />
                 </Box>
-                <Text color="yellow">Deleting repository...</Text>
+                <Text color="yellow">Deleting {repos.length === 1 ? 'repository' : 'repositories'}...</Text>
               </Box>
             </Box>
-          ) : (
+          )}
+
+          {!deleting ? (
             <>
               <Box marginTop={2} flexDirection="row" justifyContent="center" gap={4}>
                 <Box 
@@ -179,10 +301,20 @@ export default function DeleteModal({ repo, onDelete, onCancel }: DeleteModalPro
               </Box>
             </>
           )}
-          
+
           {deleteError && (
-            <Box marginTop={1}>
+            <Box marginTop={1} flexDirection="column">
               <Text color="red">{deleteError}</Text>
+              {progress && progress.failed.length > 0 && (
+                <Box flexDirection="column" marginTop={1}>
+                  <Text color="gray">Failed repositories:</Text>
+                  {progress.failed.map((failure, i) => (
+                    <Text key={failure.repoId} color="red" dimColor>
+                      • {failure.repoName}: {failure.error}
+                    </Text>
+                  ))}
+                </Box>
+              )}
             </Box>
           )}
         </>

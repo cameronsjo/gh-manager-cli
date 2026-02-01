@@ -178,6 +178,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
   // Multi-select mode state
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [selectedRepos, setSelectedRepos] = useState<Set<string>>(new Set());
+  const [reposToDelete, setReposToDelete] = useState<RepoNode[]>([]);
 
   // Clone modal state
   const cloneModal = useModalState<RepoNode>();
@@ -767,6 +768,54 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     if (onOrgContextChange) {
       handleOrgContextChangeRef.current?.(newContext);
     }
+  }
+
+  // Single-repo delete handler for DeleteModal component
+  async function handleDeleteRepo(repo: RepoNode): Promise<void> {
+    const [owner, repoName] = (repo.nameWithOwner || '').split('/');
+    await deleteRepositoryRest(token, owner, repoName);
+
+    // Update Apollo cache
+    const targetId = (repo as any).id;
+    await updateCacheAfterDelete(token, targetId);
+
+    // Remove from both regular items and search items
+    setItems((prev) => prev.filter((r: any) => r.id !== targetId));
+    setSearchItems((prev) => prev.filter((r: any) => r.id !== targetId));
+
+    // Update counts
+    setTotalCount((c) => Math.max(0, c - 1));
+    if (searchActive) {
+      setSearchTotalCount((c) => Math.max(0, c - 1));
+    }
+
+    // Keep cursor in range
+    setCursor((c) => Math.max(0, Math.min(c, visibleItems.length - 2)));
+  }
+
+  // Single-repo clone handler for CloneModal component
+  async function handleCloneRepo(repo: RepoNode, cloneType: CloneType, resolvedPath: string): Promise<void> {
+    const sshUrl = `git@github.com:${repo.nameWithOwner}.git`;
+    const repoName = repo.nameWithOwner.split('/')[1];
+
+    // For bare clones, append .git to the path
+    const clonePath = cloneType === 'bare'
+      ? (resolvedPath === '.' ? `${repoName}.git` : `${resolvedPath}.git`)
+      : (resolvedPath === '.' ? repoName : resolvedPath);
+
+    const cloneCmd = cloneType === 'bare'
+      ? `git clone --bare "${sshUrl}" "${clonePath}"`
+      : `git clone "${sshUrl}" "${clonePath}"`;
+
+    return new Promise<void>((resolve, reject) => {
+      exec(cloneCmd, (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr || error.message));
+        } else {
+          resolve();
+        }
+      });
+    });
   }
 
   function cancelDeleteModal() {
@@ -1463,8 +1512,25 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
     // Delete key: open delete modal (Del or Backspace)
     // Some terminals may set delete=true even for Backspace
     if (key.delete || key.backspace) {
+      // Handle multi-select mode
+      if (multiSelectMode && selectedRepos.size > 0) {
+        const repos = getSelectedReposArray();
+        setReposToDelete(repos);
+        deleteModal.open();
+        setTypedCode('');
+        // Generate random DELETE_CODE_LENGTH-char uppercase code excluding 'C'
+        const letters = 'ABDEFGHIJKLMNOPQRSTUVWXYZ';
+        const code = Array.from({ length: DELETE_CODE_LENGTH }, () => letters[Math.floor(Math.random() * letters.length)]).join('');
+        setDeleteCode(code);
+        setDeleteConfirmStage(false);
+        setConfirmFocus('delete');
+        return;
+      }
+
+      // Handle single-repo mode
       const repo = visibleItems[cursor];
       if (repo) {
+        setReposToDelete([repo]);  // Wrap single repo in array
         deleteModal.open(repo);
         setTypedCode('');
         // Generate random DELETE_CODE_LENGTH-char uppercase code excluding 'C'
@@ -2071,8 +2137,22 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
 
       {/* Main content container with border - fixed height */}
       <Box borderStyle="single" borderColor={modalOpen ? 'gray' : 'yellow'} paddingX={1} paddingY={1} marginX={1} height={contentHeight + containerPadding + 2} flexDirection="column">
-        {deleteModal.isOpen && deleteModal.target ? (
-          // Centered modal; hide list content while modal is open
+        {deleteModal.isOpen && reposToDelete.length > 0 ? (
+          // Use DeleteModal component for multi-select or single-repo delete
+          <Box height={contentHeight} alignItems="center" justifyContent="center">
+            <DeleteModal
+              repos={reposToDelete}
+              onDelete={handleDeleteRepo}
+              onCancel={() => {
+                deleteModal.close();
+                setReposToDelete([]);
+                setTypedCode('');
+                setDeleteConfirmStage(false);
+              }}
+            />
+          </Box>
+        ) : deleteModal.isOpen && deleteModal.target ? (
+          // Legacy inline modal (kept for compatibility)
           <Box height={contentHeight} alignItems="center" justifyContent="center">
             <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={3} paddingY={2} width={Math.min(terminalWidth - 8, 80)}>
                       <Text bold>Delete Confirmation</Text>
@@ -2535,8 +2615,15 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
             <CloneModal
               repos={getSelectedReposArray()}
               terminalWidth={terminalWidth}
-              onClose={closeCloneModal}
-              onClone={executeClone}
+              onClose={() => {
+                closeCloneModal();
+                // Clear multi-select after closing
+                if (multiSelectMode) {
+                  setSelectedRepos(new Set());
+                  setMultiSelectMode(false);
+                }
+              }}
+              onClone={handleCloneRepo}
             />
           </Box>
         ) : (
@@ -2663,7 +2750,7 @@ export default function RepoList({ token, maxVisibleRows, onLogout, viewerLogin,
         {multiSelectMode && (
           <Box width={terminalWidth} justifyContent="center" marginBottom={1}>
             <Text color="cyan" bold>
-              Multi-Select: {selectedRepos.size} selected • Space Toggle • Ctrl+A All • M Exit • Shift+C Clone
+              Multi-Select: {selectedRepos.size} selected • Space Toggle • Ctrl+A All • M Exit • Shift+C Clone • Del Delete
             </Text>
           </Box>
         )}

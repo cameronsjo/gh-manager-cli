@@ -236,6 +236,37 @@ export default function DeleteModal({ repos, onDelete, onCancel }: DeleteModalPr
               <Box height={1}><Text> </Text></Box>
               <Text>Are you absolutely sure you want to delete {repos.length === 1 ? 'this repository' : 'these repositories'}?</Text>
               <Text>This action <Text bold>CANNOT</Text> be undone.</Text>
+
+              {/* Action buttons */}
+              <Box marginTop={2} flexDirection="row" justifyContent="center" gap={4}>
+                <Box
+                  paddingX={2}
+                  paddingY={1}
+                  flexDirection="column"
+                >
+                  <Text>
+                    {confirmFocus === 'delete' ?
+                      chalk.bgRed.white.bold(' Delete ') :
+                      chalk.red.bold('Delete')
+                    }
+                  </Text>
+                </Box>
+                <Box
+                  paddingX={2}
+                  paddingY={1}
+                  flexDirection="column"
+                >
+                  <Text>
+                    {confirmFocus === 'cancel' ?
+                      chalk.bgGray.white.bold(' Cancel ') :
+                      chalk.gray.bold('Cancel')
+                    }
+                  </Text>
+                </Box>
+              </Box>
+              <Box marginTop={1} flexDirection="row" justifyContent="center">
+                <Text color="gray">Press Enter to {confirmFocus === 'delete' ? 'Delete' : 'Cancel'} • Y to confirm • C to cancel</Text>
+              </Box>
             </>
           ) : progress ? (
             <>
@@ -266,40 +297,6 @@ export default function DeleteModal({ repos, onDelete, onCancel }: DeleteModalPr
                 <Text color="yellow">Deleting {repos.length === 1 ? 'repository' : 'repositories'}...</Text>
               </Box>
             </Box>
-          )}
-
-          {!deleting ? (
-            <>
-              <Box marginTop={2} flexDirection="row" justifyContent="center" gap={4}>
-                <Box 
-                  paddingX={2} 
-                  paddingY={1} 
-                  flexDirection="column"
-                >
-                  <Text>
-                    {confirmFocus === 'delete' ? 
-                      chalk.bgRed.white.bold(' Delete ') : 
-                      chalk.red.bold('Delete')
-                    }
-                  </Text>
-                </Box>
-                <Box 
-                  paddingX={2} 
-                  paddingY={1} 
-                  flexDirection="column"
-                >
-                  <Text>
-                    {confirmFocus === 'cancel' ? 
-                      chalk.bgGray.white.bold(' Cancel ') : 
-                      chalk.gray.bold('Cancel')
-                    }
-                  </Text>
-                </Box>
-              </Box>
-              <Box marginTop={1} flexDirection="row" justifyContent="center">
-                <Text color="gray">Press Enter to {confirmFocus === 'delete' ? 'Delete' : 'Cancel'} • Y to confirm • C to cancel</Text>
-              </Box>
-            </>
           )}
 
           {deleteError && (

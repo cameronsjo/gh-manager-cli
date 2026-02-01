@@ -19,7 +19,7 @@ interface DeleteProgress {
 
 interface DeleteModalProps {
   repos: RepoNode[];
-  onDelete: (repos: RepoNode[]) => Promise<void>;
+  onDelete: (repo: RepoNode) => Promise<void>;
   onCancel: () => void;
 }
 
@@ -107,8 +107,8 @@ export default function DeleteModal({ repos, onDelete, onCancel }: DeleteModalPr
         } : null);
 
         try {
-          // Call the delete handler with single repo wrapped in array
-          await onDelete([repo]);
+          // Call the delete handler for single repo
+          await onDelete(repo);
 
           // Add to completed
           setProgress(prev => prev ? {
